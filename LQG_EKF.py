@@ -14,7 +14,7 @@ class LQG_EKF:
     # u includes only u_Si
     # A includes only A_S
     # B includes only B_Si
-    def __init__(self, A_E, A_S, B_Si, C, Q, R, W, V, M, H, num_sensors=4):
+    def __init__(self, A_E, A_S, B_Si, C, Q, R, W, V, M, num_sensors=4):
         self.m = num_sensors # number of sensors
         # Define system matrices
         # self.A = scipy.linalg.block_diag(A_E, A_S) # Block diagonal matrix
@@ -24,7 +24,6 @@ class LQG_EKF:
         self.C = C # Measurement matrix
         self.Q = Q # State cost weight in LQR
         self.R = R # Control cost weight in LQR
-        self.H = H # Horizon 
         
         self.W = W # Process noise covariance
         self.V = V # Measurement noise covariance
@@ -84,8 +83,7 @@ class LQG_EKF:
                     
         # control gain at current time step:
         #   K = (R + B^T P B)^(-1) (B^T P A)
-        self.K = -np.linalg.inv(self.R + self.B.T @ self.P_lqr @ self.B) @ (self.B.T @ self.P_lqr @ self.A)  
-        # self.K = (-np.linalg.pinv(self.R + self.B.T * self.P_lqr * self.B) * self.B.T * self.P_lqr * self.A)
+        self.K = np.linalg.inv(self.R + self.B.T @ self.P_lqr @ self.B) @ (self.B.T @ self.P_lqr @ self.A)  # LQR gain
         return 
     
     def step(self):
