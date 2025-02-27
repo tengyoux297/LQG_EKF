@@ -2,22 +2,32 @@ import numpy as np
 import scipy.linalg
 import scipy.signal
 import matplotlib.pyplot as plt
+from typing import Literal
 
 small_value = 1e-6  # Small value to prevent numerical issues
 
-def get_measurement(C, x, M, v):
+def get_measurement(C = None, x = None, v = None, M = None):
+    assert C is not None, 'Measurement matrix C is required for Kalman filter'
+    assert x is not None, 'State x is required for Kalman filter'
+    assert v is not None, 'Measurement noise v is required for Kalman filter'
+    assert M is not None, 'Matrix M is required for Extended Kalman filter'
     quad_term = np.clip(x.T @ M @ x, -1e6, 1e6)  # Limit extreme values
     return C @ x + quad_term * np.ones((M.shape[0], 1)) + v
 
 
-class LQG_EKF:
-    def __init__(self, A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, num_sensors=4):
+class LQG:
+    def __init__(self, A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter: Literal['EKF', 'KF'] = 'EKF'):
+        # filter type
+        self.filter = filter    
+        
         # states
         self.H = H # time horizon
-        self.m = num_sensors
         
-        x_E_0 = np.zeros((num_sensors, 1), dtype=np.float64) # state of the earth
-        x_S_0 = np.zeros((num_sensors, 1), dtype=np.float64) # state of the sensors
+        self.m = A_S.shape[0] # sensor state size
+        self.n = A_E.shape[0] # earth state size
+        
+        x_E_0 = np.zeros((self.n, 1), dtype=np.float64) # state of the earth
+        x_S_0 = np.zeros((self.m, 1), dtype=np.float64) # state of the sensors
         self.x = [np.vstack((x_E_0, x_S_0))] # true state
         self.x_hat = [np.vstack((x_E_0, x_S_0))] # estimated state
         
@@ -26,7 +36,7 @@ class LQG_EKF:
         # lqe 
         self.C = C.astype(np.float64) # measurement matrix
         self.kalman_gain_list = [None]
-        self.P_lqe = [np.eye(2 * self.m, dtype=np.float64) * small_value]  # estimation error covariance matrix 
+        self.P_lqe = [np.eye( self.n + self.m, dtype=np.float64) * small_value]  # estimation error covariance matrix 
         self.M = M.astype(np.float64) # matrix in the non-linear measurement function
         
         # lqr
@@ -34,9 +44,10 @@ class LQG_EKF:
         self.A_S = A_S.astype(np.float64)
         self.A = scipy.linalg.block_diag(self.A_E, self.A_S)
         
-        self.B_E = np.zeros((num_sensors, num_sensors), dtype=np.float64)
+        self.B_E = np.zeros((self.n, self.n), dtype=np.float64)
         self.B_S = B_Si.astype(np.float64)
-        self.B = np.vstack((self.B_E, self.B_S))
+        
+        self.B = np.linalg.pinv(scipy.linalg.block_diag(self.B_E, self.B_S))
         self.Q = Q.astype(np.float64)
         self.R = R.astype(np.float64)
         self.control_gain_list = []
@@ -49,9 +60,9 @@ class LQG_EKF:
         self.w = [None]
         self.v = [None]
         for _ in range(H):
-            w_E = np.random.multivariate_normal(np.zeros(num_sensors), W_E).reshape(-1, 1)
-            w_S = np.random.multivariate_normal(np.zeros(num_sensors), W_S).reshape(-1, 1)
-            v = np.random.multivariate_normal(np.zeros(2 * num_sensors), V).reshape(-1, 1)
+            w_E = np.random.multivariate_normal(np.zeros(self.n), W_E).reshape(-1, 1)
+            w_S = np.random.multivariate_normal(np.zeros(self.m), W_S).reshape(-1, 1)
+            v = np.random.multivariate_normal(np.zeros(self.m + self.n), V).reshape(-1, 1)
             self.w.append(np.vstack((w_E, w_S)))
             self.v.append(v)
     
@@ -72,38 +83,70 @@ class LQG_EKF:
     
     def update_lqe(self): 
         
-        for k in range(1, self.H + 1, 1):
-            # update state
-            self.u.append(self.control_gain_list[k-1] @ self.x_hat[k-1])
-            self.x.append(self.A @ self.x[k-1] + self.B @ self.u[k-1] + self.w[k])
-            
-            # Jacobian of the measurement function  
-            C_tilde = (self.C + 2 * self.M @ self.x[k] @ np.ones((1, 2*self.m))).squeeze()
-            
-            # priori estimate 
-            x_hat_pri = self.A @ self.x_hat[k-1] + self.B @ self.u[k-1]     
-            
-            # P_k-1
-            p0 = self.P_lqe[k-1]
-            
-            # kalman gain
-                # K = P- @ C^T @ inv(C @ P- @ C^T + V)
-            kalman_gain =(p0 @ C_tilde.T @ np.linalg.pinv(C_tilde @ p0 @ C_tilde.T + self.V))
-            self.kalman_gain_list.append(kalman_gain)
-            
-            # measurement
-            z = get_measurement(self.C, self.x[k], self.M, self.v[k])
-            
-            # innovation
-            y = z - get_measurement(self.C, x_hat_pri, self.M, np.zeros((2*self.m, 1)))
-            
-            # posterior estimate
-            x_hat_post = x_hat_pri + kalman_gain @ y
-            self.x_hat.append(x_hat_post)
-            
-            # P_k - Propagation of the estimation error covariance matrix
-            p1 = (np.eye(2*self.m) - kalman_gain @ C_tilde) @ p0
-            self.P_lqe.append(p1)
+        if self.filter == 'KF':
+            for k in range(1, self.H + 1, 1):
+                # update state
+                self.u.append(self.control_gain_list[k-1] @ self.x_hat[k-1])
+                self.x.append(self.A @ self.x[k-1] + self.B @ self.u[k-1] + self.w[k])
+                
+                # priori estimate 
+                x_hat_pri = self.A @ self.x_hat[k-1] + self.B @ self.u[k-1]     
+                
+                # P_k-1
+                p0 = self.P_lqe[k-1]
+                
+                # kalman gain
+                    # K = P- @ C^T @ inv(C @ P- @ C^T + V)
+                kalman_gain =(p0 @ self.C.T @ np.linalg.pinv(self.C @ p0 @ self.C.T + self.V))
+                self.kalman_gain_list.append(kalman_gain)
+                
+                # measurement
+                z = get_measurement(C=self.C, x=self.x[k], v=self.v[k], M=self.M)
+                
+                # innovation
+                y = z - get_measurement(C=self.C, x=x_hat_pri, v=np.zeros((self.m + self.n, 1)), M=self.M)
+                
+                # posterior estimate
+                x_hat_post = x_hat_pri + kalman_gain @ y
+                self.x_hat.append(x_hat_post)
+                
+                # P_k - Propagation of the estimation error covariance matrix
+                p1 = (np.eye(self.n + self.m) - kalman_gain @ self.C) @ p0
+                self.P_lqe.append(p1)
+        
+        elif self.filter == 'EKF':
+            for k in range(1, self.H + 1, 1):
+                # update state
+                self.u.append(self.control_gain_list[k-1] @ self.x_hat[k-1])
+                self.x.append(self.A @ self.x[k-1] + self.B @ self.u[k-1] + self.w[k])
+                
+                # Jacobian of the measurement function  
+                C_tilde = (self.C + 2 * self.M @ self.x[k] @ np.ones((1, self.n + self.m))).squeeze()
+                
+                # priori estimate 
+                x_hat_pri = self.A @ self.x_hat[k-1] + self.B @ self.u[k-1]     
+                
+                # P_k-1
+                p0 = self.P_lqe[k-1]
+                
+                # kalman gain
+                    # K = P- @ C^T @ inv(C @ P- @ C^T + V)
+                kalman_gain =(p0 @ C_tilde.T @ np.linalg.pinv(C_tilde @ p0 @ C_tilde.T + self.V))
+                self.kalman_gain_list.append(kalman_gain)
+                
+                # measurement
+                z = get_measurement(C=self.C, x=self.x[k], v=self.v[k], M=self.M)
+                
+                # innovation
+                y = z - get_measurement(C=self.C, x=x_hat_pri, v=np.zeros((self.n + self.m, 1)), M=self.M)
+                
+                # posterior estimate
+                x_hat_post = x_hat_pri + kalman_gain @ y
+                self.x_hat.append(x_hat_post)
+                
+                # P_k - Propagation of the estimation error covariance matrix
+                p1 = (np.eye(self.n + self.m) - kalman_gain @ C_tilde) @ p0
+                self.P_lqe.append(p1)
         return
     
     def simulate(self, plot=True):
@@ -113,6 +156,11 @@ class LQG_EKF:
         
         if plot:
             self.plot_history()
+            
+        estimate_error_list = []
+        for k in range(1, self.H + 1, 1):
+            estimate_error_list.append(np.trace(self.P_lqe[k]))
+        return estimate_error_list
     
     def plot_history(self):
         
@@ -125,30 +173,49 @@ class LQG_EKF:
         plt.xlabel('Time')
         plt.ylabel('Estimation error')
         plt.show()
-
+    
+def generate_random_positive_definite_matrix(size, scale=1.0):
+    """Generates a random positive definite matrix."""
+    A = np.random.randn(size, size)
+    return scale * (A.T @ A) + np.eye(size) * 1e-3  # Ensure it's positive definite
+    
 # Test with random values
 if __name__ == "__main__":
-    # Define parameters
-    num_sensors = 8
-    H = 2000  # Time horizon
-    # System Matrices
-    A_E = np.eye(num_sensors) + np.random.randn(num_sensors, num_sensors) * 0.05
-    A_S = np.eye(num_sensors) + np.random.randn(num_sensors, num_sensors) * 0.05
-    B_Si = np.random.randn(num_sensors, num_sensors) * 0.1
-    C = np.random.randn(2 * num_sensors, 2 * num_sensors)
 
-    # Cost Matrices
-    Q = np.eye(2 * num_sensors) * 0.1
-    R = np.eye(num_sensors) * 0.1
 
-    # Noise Covariances
-    W_E = np.eye(num_sensors) * 0.01
-    W_S = np.eye(num_sensors) * 0.01
-    V = np.eye(2 * num_sensors) * 0.01  # Combined measurement noise
+    # Define dimensions
+    n = 4  # Number of earth states
+    m = 3  # Number of sensor states
 
-    # Quadratic measurement matrix
-    M = np.random.randn(2 * num_sensors, 2 * num_sensors) * 0.01
+    # Random system matrices
+    A_E = np.random.randn(n, n) * 0.1
+    A_S = np.random.randn(m, m) * 0.1
+    B_Si = np.random.randn(m, m) * 0.1
+    C = np.random.randn(m + n, n + m) * 0.1
+    M = np.random.randn(m + n, n + m) * 0.01  # Small nonlinearity
 
-    # Initialize LQG-EKF and run simulation
-    lqg_ekf = LQG_EKF(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, num_sensors)
-    lqg_ekf.simulate()
+    # Cost matrices (should be positive definite)
+    Q = generate_random_positive_definite_matrix(n + m, scale=10)  # LQR state cost
+    R = generate_random_positive_definite_matrix(n + m, scale=1)   # LQR control cost
+
+    # Covariance matrices (must be positive definite)
+    W_E = generate_random_positive_definite_matrix(n, scale=0.01)  # Process noise (Earth)
+    W_S = generate_random_positive_definite_matrix(m, scale=0.01)  # Process noise (Sensor)
+    V = generate_random_positive_definite_matrix(m + n, scale=0.01)  # Measurement noise
+
+    # Horizon length
+    H = 100000
+
+    # Create LQG_EKF instance and simulate
+    lqg_ekf = LQG(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter='EKF')
+    estimate_error_list_ekf = lqg_ekf.simulate(plot=False)
+    lqg_kf = LQG(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter='KF')
+    estimate_error_list_kf = lqg_kf.simulate(plot=False)
+    
+    # Plot estimation error
+    plt.plot(estimate_error_list_ekf, label='EKF', marker='o', markersize=1)
+    plt.plot(estimate_error_list_kf, label='KF', marker='o', markersize=1)
+    plt.xlabel('Time')
+    plt.ylabel('Estimation error')
+    plt.legend()
+    plt.show()
