@@ -40,6 +40,7 @@ class LQG:
         self.x_hat = [torch.vstack((x_E_0, x_S_0))] # estimated state
         
         self.u = [] # control input
+        # drone contrtols - control on sensors
         
         # lqe 
         self.C = C.to(dtype=torch.float64, device=device) # measurement matrix
@@ -212,7 +213,7 @@ if __name__ == "__main__":
     V = generate_random_positive_definite_matrix(m + n, scale=1)  # Measurement noise
 
     # Horizon length
-    H = 100000
+    H = 1000
 
     # Create LQG_EKF instance and simulate
     print('Simulating EKF...')
