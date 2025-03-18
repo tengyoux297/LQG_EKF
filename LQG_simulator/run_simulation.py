@@ -8,10 +8,10 @@ from utils import *
 from LQG import LQG
 from time import sleep
 import tqdm
- 
+from typing import Literal
 show_animation = True
  
-def closed_loop_prediction(desired_traj, landmarks):
+def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']='EKF'):
  
     ## Simulation Parameters
     T = desired_traj.shape[0]  # Maximum simulation time
@@ -50,9 +50,13 @@ def closed_loop_prediction(desired_traj, landmarks):
     
     # set up the LQG controller
     lqg = LQG(F=DiffDrive, x_0=state, x_hat_0=state_est, A=A, B=B, 
-              sensor=LandSens, Q=Q, R=R, W=W, V=V, dt=dt, filter='EKF')
+              sensor=LandSens, Q=Q, R=R, W=W, V=V, dt=dt, filter=filter)
     
-    for time in tqdm.tqdm(np.arange(time_0, T, dt)):
+    measurement_err = []
+    cost_to_go = []
+    
+    time_steps = np.arange(time_0, T, dt)
+    for time in tqdm.tqdm(time_steps):
          
         ## Point to track
         ind = int(np.floor(time))
@@ -75,16 +79,19 @@ def closed_loop_prediction(desired_traj, landmarks):
         t.append(time)
         state = lqg.x
         state_est = lqg.x_hat
-        # print('state:', state, 'state_est:', state_est)
-        # print('error:', np.trace(lqg.P_lqe))
+        measure_covar_matrix = lqg.P_lqe
+        cost_to_go_matrix = lqg.P_lqr
+        # print('error:', (measure_covar_matrix))  
         
         traj = np.concatenate((traj,[state]),axis=0)
         traj_est = np.concatenate((traj_est,[state_est]),axis=0)
+        measurement_err.append(np.trace(measure_covar_matrix))
+        cost_to_go.append((state_est.T @ cost_to_go_matrix @ state_est).item())
  
         # Check to see if the robot reached goal
-        if np.linalg.norm(state[0:2]-goal[0:2]) <= goal_dis:
-            print("Goal reached")
-            break
+        # if np.linalg.norm(state[0:2]-goal[0:2]) <= goal_dis:
+        #     print("Goal reached")
+        #     break
  
         ## Plot the vehicles trajectory
         if time % 1 < 0.1 and show_animation:
@@ -102,23 +109,10 @@ def closed_loop_prediction(desired_traj, landmarks):
             plt.pause(0.0001)
  
         #input()
- 
-    return t, traj
+    return t, traj, measurement_err, cost_to_go, time_steps
  
  
 def main():
- 
-    # Countdown to start
-    print("\n*** SINGAPORE GRAND PRIX ***\n")
-    print("Start your engines!")
-    print("3.0")
-    sleep(1.0)
-    print("2.0")
-    sleep(1.0)
-    print("1.0\n")
-    sleep(1.0)
-    print("LQR + EKF steering control tracking start!!")
- 
     # Create the track waypoints
     ax = [8.3,8.0, 7.2, 6.5, 6.2, 6.5, 1.5,-2.0,-3.5,-5.0,-7.9,
        -6.7,-6.7,-5.2,-3.2,-1.2, 0.0, 0.2, 2.5, 2.8, 4.4, 4.5, 7.8, 8.5, 8.3]
@@ -132,23 +126,46 @@ def main():
          
     # Compute the desired trajectory
     desired_traj = compute_traj(ax,ay)
- 
-    t, traj = closed_loop_prediction(desired_traj,landmarks)
+    
+    _, traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF')
+    _, traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF')
  
     # Display the trajectory that the mobile robot executed
+    plot_dir = 'plots/'
+    import os
+    os.makedirs(plot_dir, exist_ok=True)
+    
     if show_animation:
         plt.close()
-        flg, _ = plt.subplots(1)
-        plt.plot(ax, ay, "xb", label="input")
-        plt.plot(desired_traj[:,0], desired_traj[:,1], "-r", label="spline")
-        plt.plot(traj[:,0], traj[:,1], "-g", label="tracking")
-        plt.grid(True)
-        plt.axis("equal")
-        plt.xlabel("x[m]")
-        plt.ylabel("y[m]")
-        plt.legend()
- 
-        plt.show()
+        flg, axes = plt.subplots(3,1, figsize=(10, 15))
+        # tracking paths
+        axes[0].plot(ax, ay, "xb", label="input")
+        axes[0].plot(desired_traj[:,0], desired_traj[:,1], "-r", label="spline")
+        axes[0].plot(traj_ekf[:,0], traj_ekf[:,1], "-g", label="tracking_ekf")
+        axes[0].plot(traj_ukf[:,0], traj_ukf[:,1], "-k", label="tracking_ukf")
+        axes[0].grid(True)
+        axes[0].axis("equal")
+        axes[0].set_xlabel("x[m]")
+        axes[0].set_ylabel("y[m]")
+        axes[0].legend()
+        # error
+        axes[1].plot(time_steps[:len(err_ekf)], err_ekf, "-g", label="error_ekf")
+        axes[1].plot(time_steps[:len(err_ukf)], err_ukf, "-k", label="error_ukf")
+        axes[1].grid(True)
+        axes[1].set_xlabel("time")
+        axes[1].set_ylabel("measurement error")
+        axes[1].legend()
+        # cost
+        axes[2].plot(time_steps[:len(cost_ekf)], cost_ekf, "-g", label="cost_ekf")
+        axes[2].plot(time_steps[:len(cost_ukf)], cost_ukf, "-k", label="cost_ukf")
+        axes[2].grid(True)
+        axes[2].set_xlabel("time")    
+        axes[2].set_ylabel("cost-to-go")
+        axes[2].legend()
+        
+        plt.tight_layout()
+        plt.savefig(plot_dir + "performance_results.png")
+        # plt.show()
  
  
 if __name__ == '__main__':
