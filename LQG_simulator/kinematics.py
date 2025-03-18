@@ -43,13 +43,13 @@ class DifferentialDrive(object):
  
   def get_state_size(self):
     """
-    The state is (X, Y, THETA) in global coordinates, so the state size is 3.
+    The state is (X, Y) in global coordinates, so the state size is 2.
     """
-    return 3
+    return 2
  
   def get_input_size(self):
     """
-    The control input is ([linear velocity of the car, angular velocity of the car]), 
+    The control input is ([X_velocity, Y_velocity]), 
     so the input size is 2.
     """
     return 2
@@ -62,15 +62,14 @@ class DifferentialDrive(object):
     Feel free to experiment with different levels of noise.
  
     Output
-      :return: V: input cost matrix (3 x 3 matrix)
+      :return: V: input cost matrix (2 x 2 matrix)
     """
     # The np.eye function returns a 2D array with ones on the diagonal
     # and zeros elsewhere.
     if self.V is None:
-      self.V = np.eye(3)
+      self.V = np.eye(2)
       self.V[0,0] = 0.01
       self.V[1,1] = 0.01
-      self.V[2,2] = 0.1
     return self.noise_coeff * self.V
  
   def forward(self,x0,u,v,dt=0.1):
@@ -97,32 +96,23 @@ class DifferentialDrive(object):
     # If there is no noise applied to the system
     if v is None:
       v = 0
-     
-        # Starting state of the vehicle
-    X = x0[0]
-    Y = x0[1]
-    THETA = x0[2]
- 
+  
     # Control input
-    u_linvel = u0[0]
-    u_angvel = u0[1]
- 
     # Velocity in the x and y direction in m/s
-    x_dot = u_linvel * np.cos(THETA)
-    y_dot = u_linvel * np.sin(THETA)
+    x_dot = u0[0]
+    y_dot = u0[1]
    
     # The new state of the system
-    x1 = np.empty(3)
+    x1 = np.empty(2)
      
     # Calculate the new state of the system
     # Noise is added like in slide 34 in Lecture 7
     x1[0] = x0[0] + x_dot * dt + v[0] # X
     x1[1] = x0[1] + y_dot * dt + v[1] # Y
-    x1[2] = x0[2] + u_angvel * dt + v[2] # THETA
  
     return x1
  
-  def linearize(self, x, dt=0.1):
+  def linearize(self, dt=0.1):
     """
     Creates a linearized version of the dynamics of the differential 
     drive robotic system (i.e. a
@@ -144,31 +134,27 @@ class DifferentialDrive(object):
       :param dt: The change in time from time step t to time step t+1      
  
     Output
-      :return: A: Matrix A is a 3x3 matrix (because there are 3 states) that 
+      :return: A: Matrix A is a 2x2 matrix (because there are 2 states) that 
                   describes how the state of the system changes from t to t+1 
                   when no control command is executed. Typically, 
                   a robotic car only drives when the wheels are turning. 
                   Therefore, in this case, A is the identity matrix.
-      :return: B: Matrix B is a 3 x 2 matrix (because there are 3 states and 
+      :return: B: Matrix B is a 2 x 2 matrix (because there are 2 states and 
                   2 control inputs) that describes how
-                  the state (X, Y, and THETA) changes from t to t + 1 due to 
+                  the state (X, Y) changes from t to t + 1 due to 
                   the control command u.
                   Matrix B is found by taking the The Jacobian of the three 
-                  forward kinematics equations (for X, Y, THETA) 
-                  with respect to u (3 x 2 matrix)
+                  forward kinematics equations (for X, Y) 
+                  with respect to u (2 x 1 matrix)
  
     """
-    THETA = x[2]
- 
     ####### A Matrix #######
     # A matrix is the identity matrix
-    A = np.array([[1.0,   0,  0],
-                  [  0, 1.0,  0],
-                  [  0,   0, 1.0]])
+    A = np.array([[1.0,   0],
+                  [  0, 1.0]])
  
     ####### B Matrix #######
-    B = np.array([[np.cos(THETA)*dt, 0],
-                  [np.sin(THETA)*dt, 0],
+    B = np.array([[dt, 0],
                   [0, dt]])
          
     return A, B
@@ -297,8 +283,7 @@ def get_Q():
       :return: Q: State cost matrix (3x3 matrix because the state vector is 
                   (X, Y, THETA))
     """
-    Q = np.array([[0.4, 0, 0], # Penalize X position error (global coordinates)
-                  [0, 0.4, 0], # Penalize Y position error (global coordinates)
-                  [0, 0, 0.4]])# Penalize heading error (global coordinates)
+    Q = np.array([[0.4, 0],  # Penalize X position error (global coordinates)
+                  [0, 0.4]]) # Penalize Y position error (global coordinates)
      
     return Q

@@ -11,7 +11,7 @@ import tqdm
 from typing import Literal
 show_animation = True
  
-def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']='EKF'):
+def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']='EKF', noise_coeff=1):
  
     ## Simulation Parameters
     T = desired_traj.shape[0]  # Maximum simulation time
@@ -22,7 +22,7 @@ def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']=
  
  
     ## Initial States 
-    state = np.array([8.3,0.69,0]) # Initial state of the car
+    state = np.array([8.3,0.69]) # Initial state of the car
     state_est = state.copy()
  
     ## Get the Cost-to-go and input cost matrices for LQR
@@ -30,8 +30,8 @@ def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']=
     R = get_R() # Defined in kinematics.py
  
     ## Initialize the Car and the Car's landmark sensor 
-    DiffDrive = DifferentialDrive(noise_coeff=1e-2)
-    LandSens = LandmarkDetector(landmarks, noise_coeff=1e-2)
+    DiffDrive = DifferentialDrive(noise_coeff=noise_coeff)
+    LandSens = LandmarkDetector(landmarks, noise_coeff=noise_coeff)
          
     # Process noise
     V = DiffDrive.get_V()
@@ -46,11 +46,11 @@ def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']=
     ind = 0
     
     # state dynamics
-    A, B = DiffDrive.linearize(state_est, dt)
+    A, B = DiffDrive.linearize(dt)
     
     # set up the LQG controller
     lqg = LQG(F=DiffDrive, x_0=state, x_hat_0=state_est, A=A, B=B, 
-              sensor=LandSens, Q=Q, R=R, W=W, V=V, dt=dt, filter=filter)
+              sensor=LandSens, Q=Q, R=R, W=W, V=V, H=25, dt=dt, filter=filter)
     
     measurement_err = []
     cost_to_go = []
@@ -126,9 +126,9 @@ def main():
          
     # Compute the desired trajectory
     desired_traj = compute_traj(ax,ay)
-    
-    _, traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF')
-    _, traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF')
+    noise = 0.1
+    _, traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise)
+    _, traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise)
  
     # Display the trajectory that the mobile robot executed
     plot_dir = 'plots/'
@@ -140,31 +140,32 @@ def main():
         flg, axes = plt.subplots(3,1, figsize=(10, 15))
         # tracking paths
         axes[0].plot(ax, ay, "xb", label="input")
-        axes[0].plot(desired_traj[:,0], desired_traj[:,1], "-r", label="spline")
-        axes[0].plot(traj_ekf[:,0], traj_ekf[:,1], "-g", label="tracking_ekf")
-        axes[0].plot(traj_ukf[:,0], traj_ukf[:,1], "-k", label="tracking_ukf")
+        # half transparency
+        axes[0].plot(desired_traj[:,0], desired_traj[:,1], label="spline", color = 'green')
+        axes[0].plot(traj_ekf[:,0], traj_ekf[:,1], label="tracking_ekf", color='blue', alpha=0.5)
+        axes[0].plot(traj_ukf[:,0], traj_ukf[:,1], label="tracking_ukf", color='orange', alpha=0.5)
         axes[0].grid(True)
         axes[0].axis("equal")
         axes[0].set_xlabel("x[m]")
         axes[0].set_ylabel("y[m]")
         axes[0].legend()
         # error
-        axes[1].plot(time_steps[:len(err_ekf)], err_ekf, "-g", label="error_ekf")
-        axes[1].plot(time_steps[:len(err_ukf)], err_ukf, "-k", label="error_ukf")
+        axes[1].plot(time_steps[:len(err_ekf)], err_ekf, label="error_ekf", color='blue')
+        axes[1].plot(time_steps[:len(err_ukf)], err_ukf, label="error_ukf", color='orange')
         axes[1].grid(True)
         axes[1].set_xlabel("time")
         axes[1].set_ylabel("measurement error")
         axes[1].legend()
         # cost
-        axes[2].plot(time_steps[:len(cost_ekf)], cost_ekf, "-g", label="cost_ekf")
-        axes[2].plot(time_steps[:len(cost_ukf)], cost_ukf, "-k", label="cost_ukf")
+        axes[2].plot(time_steps[:len(cost_ekf)], cost_ekf, label="cost_ekf", color='blue')
+        axes[2].plot(time_steps[:len(cost_ukf)], cost_ukf, label="cost_ukf", color='orange')
         axes[2].grid(True)
         axes[2].set_xlabel("time")    
         axes[2].set_ylabel("cost-to-go")
         axes[2].legend()
         
         plt.tight_layout()
-        plt.savefig(plot_dir + "performance_results.png")
+        plt.savefig(plot_dir + f"performance_results-noise{noise}.png")
         # plt.show()
  
  

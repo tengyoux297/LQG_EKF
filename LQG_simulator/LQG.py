@@ -11,13 +11,16 @@ import tqdm
 small_value = 1e-6  # Small value to prevent numerical issues
 
 class LQG:
-    def __init__(self, x_0, x_hat_0, F, A, B,  sensor, Q, R, W, V, dt = 0.1, filter: Literal['EKF', 'UKF'] = 'EKF'):
+    def __init__(self, x_0, x_hat_0, F, A, B,  sensor, Q, R, W, V, dt = 0.1, H = 50, filter: Literal['EKF', 'UKF'] = 'EKF'):
         # filter type
         self.filter = filter    
         self.sensor = sensor
         # forward dynamics
         self.F = F
         self.dt = dt
+        
+        # horizon
+        self.H = H
         
         # states
         self.m = A.shape[0] # state size
@@ -50,15 +53,15 @@ class LQG:
     
     def update_lqr(self, goal_state):
         # lqr horizon
-        N = 50
+        N = self.H
         
-        self.A, self.B = self.F.linearize(self.x_hat, self.dt)
+        self.A, self.B = self.F.linearize(self.dt)
         
         p_list = [None] * N
         k_list = [None] * N
         u_list = [None] * N   
         
-        x_error = self.x - goal_state[0:3]
+        x_error = self.x - goal_state[0:2]
         # update cost-to-go matrix
         p_list.append(self.Q)
         for k in (range(N, 0, -1)):
@@ -88,7 +91,7 @@ class LQG:
             x_predicted = self.F.forward(self.x_hat, self.u, self.v, self.dt)
         
             # Calculate the A and B matrices    
-            A, B = self.F.linearize(x=self.x_hat)
+            A, B = self.F.linearize(self.dt)
             
             # Predict the covariance estimate based on the 
             # previous covariance and some noise

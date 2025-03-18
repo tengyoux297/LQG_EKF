@@ -125,11 +125,6 @@ class LandmarkDetector(object):
         # Initialize state variables    
         x_t = x[0]
         y_t = x[1]
-        
-        # Constants for the quadratic function
-        a = 1.0
-        b = 1.0
-        c = 1.0
 
         # Fill in the observation model y
         for i in range(0, self.N_landmarks):
@@ -141,8 +136,8 @@ class LandmarkDetector(object):
             # Set the noise value
             w_i = w[i] if w is not None else 0.0
 
-            # Calculate the quadratic measurement
-            y_i = a * (x_t - x_l_i)**2 + b * (y_t - y_l_i)**2 + c + w_i
+            # Calculate the quadratic measurement - quadratic distance
+            y_i = (x_t - x_l_i)**2 +  (y_t - y_l_i)**2 + w_i
 
             # Populate the predicted sensor observation vector      
             y[i] = y_i
@@ -163,15 +158,11 @@ class LandmarkDetector(object):
                       The number of columns is equal to the number of states (X, Y, THETA).
         """
         # Create the Jacobian matrix H
-        H = np.zeros(shape=(self.N_landmarks, 3))
+        H = np.zeros(shape=(self.N_landmarks, 2))
 
         # Extract the state
         X_t = x[0]
         Y_t = x[1]
-        
-        # Constants for the quadratic function
-        a = 1.0
-        b = 1.0
 
         # Fill in H, the Jacobian matrix with the partial derivatives of the 
         # observation (measurement) model h
@@ -181,8 +172,7 @@ class LandmarkDetector(object):
             x_l_i = self.landmarks[i][0]
             y_l_i = self.landmarks[i][1]
         
-            H[i, 0] = 2 * a * (X_t - x_l_i)
-            H[i, 1] = 2 * b * (Y_t - y_l_i)
-            H[i, 2] = 0
+            H[i, 0] = 2 * (X_t - x_l_i)
+            H[i, 1] = 2 * (Y_t - y_l_i)
 
         return H
