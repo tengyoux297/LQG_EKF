@@ -11,13 +11,12 @@ import tqdm
 from typing import Literal
 show_animation = True
  
-def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']='EKF', noise_coeff=1):
+def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']='EKF', noise_coeff=1, dt=0.1):
  
     ## Simulation Parameters
     T = desired_traj.shape[0]  # Maximum simulation time
     goal_dis = 0.1 # How close we need to get to the goal
     goal = desired_traj[-1,:] # Coordinates of the goal
-    dt = 0.1 # Timestep interval
     time_0 = 0.0 # Starting time
  
  
@@ -127,8 +126,9 @@ def main():
     # Compute the desired trajectory
     desired_traj = compute_traj(ax,ay)
     noise = 0.1
-    _, traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise)
-    _, traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise)
+    dt = 1
+    _, traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise, dt=dt)
+    _, traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise, dt=dt)
  
     # Display the trajectory that the mobile robot executed
     plot_dir = 'plots/'
@@ -165,7 +165,7 @@ def main():
         axes[2].legend()
         
         plt.tight_layout()
-        plt.savefig(plot_dir + f"performance_results-noise{noise}.png")
+        plt.savefig(plot_dir + f"performance_results-noise{noise}-dt{dt}.png")
         # plt.show()
  
  
