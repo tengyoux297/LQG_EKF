@@ -137,10 +137,14 @@ class LandmarkDetector(object):
             w_i = w[i] if w is not None else 0.0
 
             # Calculate the quadratic measurement - quadratic distance
-            y_i = (x_t - x_l_i)**2 +  (y_t - y_l_i)**2 + w_i
+            M = np.array( [[1, 0]
+                          ,[0, 1]])
+            x = np.array([x_t - x_l_i, y_t - y_l_i])
+            
+            y_i = x.T @ M @ x
 
             # Populate the predicted sensor observation vector      
-            y[i] = y_i
+            y[i] = y_i.item() + w_i
 
         return y
     

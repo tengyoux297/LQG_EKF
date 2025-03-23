@@ -108,7 +108,7 @@ def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']=
             plt.pause(0.0001)
  
         #input()
-    return t, traj, measurement_err, cost_to_go, time_steps
+    return traj_est, measurement_err, cost_to_go, time_steps
  
  
 def main():
@@ -127,9 +127,11 @@ def main():
     desired_traj = compute_traj(ax,ay)
     noise = 0.1
     dt = 1
-    _, traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise, dt=dt)
-    _, traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise, dt=dt)
- 
+    traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise, dt=dt)
+    traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise, dt=dt)
+
+    residual_ekf = (traj_ekf[1:,0] - desired_traj[:,0])**2 + (traj_ekf[1:,1] - desired_traj[:,1])**2
+    residual_ukf = (traj_ukf[1:,0] - desired_traj[:,0])**2 + (traj_ukf[1:,1] - desired_traj[:,1])**2
     # Display the trajectory that the mobile robot executed
     plot_dir = 'plots/'
     import os
@@ -137,7 +139,7 @@ def main():
     
     if show_animation:
         plt.close()
-        flg, axes = plt.subplots(3,1, figsize=(10, 15))
+        flg, axes = plt.subplots(4,1, figsize=(10, 15))
         # tracking paths
         axes[0].plot(ax, ay, "xb", label="input")
         # half transparency
@@ -156,17 +158,25 @@ def main():
         axes[1].set_xlabel("time")
         axes[1].set_ylabel("measurement error")
         axes[1].legend()
-        # cost
-        axes[2].plot(time_steps[:len(cost_ekf)], cost_ekf, label="cost_ekf", color='blue')
-        axes[2].plot(time_steps[:len(cost_ukf)], cost_ukf, label="cost_ukf", color='orange')
-        axes[2].grid(True)
-        axes[2].set_xlabel("time")    
-        axes[2].set_ylabel("cost-to-go")
+        # residual
+        axes[2].scatter(time_steps[:len(traj_ekf)], residual_ekf, label="residual_ekf", color='blue')
+        axes[2].scatter(time_steps[:len(traj_ukf)], residual_ukf, label="residual_ukf", color='orange')
+        axes[2].set_xlabel("time")
+        axes[2].set_ylabel("residual")
         axes[2].legend()
+        # cost
+        axes[3].plot(time_steps[:len(cost_ekf)], cost_ekf, label="cost_ekf", color='blue')
+        axes[3].plot(time_steps[:len(cost_ukf)], cost_ukf, label="cost_ukf", color='orange')
+        axes[3].grid(True)
+        axes[3].set_xlabel("time")    
+        axes[3].set_ylabel("cost-to-go")
+        axes[3].legend()
         
         plt.tight_layout()
         plt.savefig(plot_dir + f"performance_results-noise{noise}-dt{dt}.png")
         # plt.show()
+        
+        
  
  
 if __name__ == '__main__':
