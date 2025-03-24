@@ -98,7 +98,7 @@ def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']=
             plt.plot(desired_traj[:,0], desired_traj[:,1], "-r", label="course")
             plt.plot(traj[:,0], traj[:,1], "ob", label="trajectory")
             plt.plot(traj_est[:,0], traj_est[:,1], "sk", label="estimated trajectory")
- 
+
             plt.plot(goal_i[0], goal_i[1], "xg", label="target")
             plt.axis("equal")
             plt.grid(True)
@@ -108,7 +108,7 @@ def closed_loop_prediction(desired_traj, landmarks, filter:Literal['EKF', 'KF']=
             plt.pause(0.0001)
  
         #input()
-    return traj_est, measurement_err, cost_to_go, time_steps
+    return traj, traj_est, measurement_err, cost_to_go, time_steps
  
  
 def main():
@@ -126,14 +126,17 @@ def main():
     # Compute the desired trajectory
     desired_traj = compute_traj(ax,ay)
     noise = 0.1
-    dt = 1
-    traj_ukf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise, dt=dt)
-    traj_ekf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise, dt=dt)
-
-    residual_ekf = (traj_ekf[1:,0] - desired_traj[:,0])**2 + (traj_ekf[1:,1] - desired_traj[:,1])**2
-    residual_ukf = (traj_ukf[1:,0] - desired_traj[:,0])**2 + (traj_ukf[1:,1] - desired_traj[:,1])**2
+    dt = 0.1
+    pred_traj_ukf, est_traj_ekf, err_ukf, cost_ukf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='UKF', noise_coeff=noise, dt=dt)
+    pred_traj_ekf, est_traj_ukf, err_ekf, cost_ekf, time_steps = closed_loop_prediction(desired_traj,landmarks, filter='EKF', noise_coeff=noise, dt=dt)
+    # Compute the distance between the desired trajectory and the estimated trajectory
+    pred_traj_ukf = pred_traj_ukf[1:]
+    pred_traj_ekf = pred_traj_ekf[1:]
+    dist_ekf = [math.sqrt((pred_traj_ekf[i,0] - est_traj_ekf[i,0])**2 + (pred_traj_ekf[i,1] - est_traj_ekf[i,1])**2) for i in range(len(pred_traj_ekf))]
+    dist_ukf = [math.sqrt((pred_traj_ukf[i,0] - est_traj_ukf[i,0])**2 + (pred_traj_ukf[i,1] - est_traj_ukf[i,1])**2) for i in range(len(pred_traj_ukf))]
+    
     # Display the trajectory that the mobile robot executed
-    plot_dir = 'plots/'
+    plot_dir = './plots/'
     import os
     os.makedirs(plot_dir, exist_ok=True)
     
@@ -144,8 +147,8 @@ def main():
         axes[0].plot(ax, ay, "xb", label="input")
         # half transparency
         axes[0].plot(desired_traj[:,0], desired_traj[:,1], label="spline", color = 'green')
-        axes[0].plot(traj_ekf[:,0], traj_ekf[:,1], label="tracking_ekf", color='blue', alpha=0.5)
-        axes[0].plot(traj_ukf[:,0], traj_ukf[:,1], label="tracking_ukf", color='orange', alpha=0.5)
+        axes[0].plot(est_traj_ekf[:,0], est_traj_ekf[:,1], label="tracking_ekf", color='blue', alpha=0.5)
+        axes[0].plot(est_traj_ukf[:,0], est_traj_ukf[:,1], label="tracking_ukf", color='orange', alpha=0.5)
         axes[0].grid(True)
         axes[0].axis("equal")
         axes[0].set_xlabel("x[m]")
@@ -158,11 +161,11 @@ def main():
         axes[1].set_xlabel("time")
         axes[1].set_ylabel("measurement error")
         axes[1].legend()
-        # residual
-        axes[2].scatter(time_steps[:len(traj_ekf)], residual_ekf, label="residual_ekf", color='blue')
-        axes[2].scatter(time_steps[:len(traj_ukf)], residual_ukf, label="residual_ukf", color='orange')
+        # residual distance
+        axes[2].plot(time_steps[:len(est_traj_ekf)], dist_ekf, label="distance_ekf", color='blue')
+        axes[2].plot(time_steps[:len(est_traj_ukf)], dist_ukf, label="distance_ukf", color='orange')
         axes[2].set_xlabel("time")
-        axes[2].set_ylabel("residual")
+        axes[2].set_ylabel("distance from goal")
         axes[2].legend()
         # cost
         axes[3].plot(time_steps[:len(cost_ekf)], cost_ekf, label="cost_ekf", color='blue')

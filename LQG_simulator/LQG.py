@@ -11,7 +11,8 @@ import tqdm
 small_value = 1e-6  # Small value to prevent numerical issues
 
 class LQG:
-    def __init__(self, x_0, x_hat_0, F, A, B,  sensor, Q, R, W, V, dt = 0.1, H = 50, filter: Literal['EKF', 'UKF'] = 'EKF'):
+    def __init__(self, x_0, x_hat_0, F, A, B,  sensor, Q, R, W, V, dt = 0.1, H = 50,
+                  filter: Literal['EKF', 'UKF', 'QKF'] = 'EKF'):
         # filter type
         self.filter = filter    
         self.sensor = sensor
@@ -62,6 +63,7 @@ class LQG:
         u_list = [None] * N   
         
         x_error = self.x - goal_state[0:2]
+        # x_error = x_error **2
         # update cost-to-go matrix
         p_list.append(self.Q)
         for k in (range(N, 0, -1)):
@@ -97,13 +99,13 @@ class LQG:
             # previous covariance and some noise
             # A and V are 3x3 matrices
             # sigma is state covariance matrix
-            sigma_3by3 = None
+            sigma = None
             if (self.P_lqe.size == 3):
-                sigma_3by3 = self.P_lqe * np.eye(3)
+                sigma = self.P_lqe * np.eye(A.shape[0])
             else:
-                sigma_3by3 = self.P_lqe
+                sigma = self.P_lqe
             
-            sigma_0 = A @ sigma_3by3 @ A.T + self.V
+            sigma_0 = A @ sigma @ A.T + self.V
         
             ##### Correction Step #####  
         
@@ -201,6 +203,8 @@ class LQG:
 
             # Update the covariance estimate
             self.P_lqe = sigma_0 - K @ S @ K.T
+        elif self.filter == 'QKF':
+            pass
            
         return 
     

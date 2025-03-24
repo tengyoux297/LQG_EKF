@@ -145,8 +145,10 @@ class LandmarkDetector(object):
 
             # Populate the predicted sensor observation vector      
             y[i] = y_i.item() + w_i
-
-        return y
+        # C = np.eye(x.shape[0])
+        # y_final = C @ x + y
+        y_final = y
+        return y_final
     
     def jacobian(self, x):
         """
