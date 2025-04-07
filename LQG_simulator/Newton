@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def Vec(X):
     """Vectorize a matrix X (column-major ordering)."""
     return X.flatten('F')
@@ -7,32 +8,58 @@ def Vec(X):
 def term2(u, params):
     """
     Implements:
-    ∂/∂u [ z(t)^T ẐA(t)^T P^z(t+1) ẐA(t) z(t) ]
-    = z1^T (A⊗B + B⊗A)^T Pz22 (A⊗(B u) + (B u)⊗A) z1
-      + z1^T (A⊗B + B⊗A)^T Pz22^T (A⊗(B u) + (B u)⊗A) z1
-    (Note: The other four terms are independent of u and hence drop out of the gradient.)
+    ∂/∂u(t) [ z^T A_tilde^T P^z A_tilde z ]
+       = z1^T (A ⊗ B + B ⊗ A)^T Pz21 A z1
+         + z1^T (A ⊗ B + B ⊗ A) Pz12^T A z1
+         + z1^T (A ⊗ B + B ⊗ A)^T Pz22 (A ⊗ A) z2
+         + z1^T (A ⊗ B + B ⊗ A)^T Pz22^T (A ⊗ A) z2
+         + z1^T (A ⊗ B + B ⊗ A)^T Pz22 (A ⊗ (B u) + (B u) ⊗ A) z1
+         + z1^T (A ⊗ B + B ⊗ A)^T Pz22^T (A ⊗ (B u) + (B u) ⊗ A) z1
     """
-    z1 = params['z1']        # vector (n,)
-    A  = params['A']         # matrix (n x n)
-    B  = params['B']         # matrix (n x p)
-    Pz22 = params['Pz22']     # matrix of appropriate dimension
-    Bu = B @ u              # (n,)
+    # Unpack the parameters
+    z1   = params['z1']    # z₁(t), assumed shape (n,)
+    z2   = params['z2']    # z₂(t), assumed shape (n^2,)
+    A    = params['A']     # matrix A, shape (n, n)
+    B    = params['B']     # matrix B, shape (n, p)
+    Pz21 = params['Pz21']  # block of P^z(t+1)
+    Pz12 = params['Pz12']  # block of P^z(t+1)
+    Pz22 = params['Pz22']  # block of P^z(t+1)
     
-    # Compute K = A ⊗ B + B ⊗ A
+    # Compute B u(t)
+    Bu = B @ u  # shape (n,)
+    
+    # Compute the Kronecker sum K = (A ⊗ B + B ⊗ A)
     K = np.kron(A, B) + np.kron(B, A)
-    # Compute the u–dependent part: (A ⊗ (B u) + (B u) ⊗ A)
-    term_inside = np.kron(A, Bu) + np.kron(Bu, A)
     
-    # Two contributions (using both Pz22 and its transpose)
-    out1 = z1.T @ K.T @ Pz22 @ term_inside @ z1
-    out2 = z1.T @ K.T @ Pz22.T @ term_inside @ z1
-    return out1 + out2
+    # First two terms (independent of u):
+    print(z1.T.shape, K.T.shape, Pz21.shape, A.shape, z1.shape)
+    T2_1 = z1.T @ (K.T) @ (Pz21 @ (A @ z1))
+    T2_2 = z1.T @ K @ (Pz12.T @ (A @ z1))
+    
+    # Next two terms (using (A ⊗ A) applied to z2):
+    kron_AA = np.kron(A, A)
+    T2_3 = z1.T @ (K.T) @ (Pz22 @ (kron_AA @ z2))
+    T2_4 = z1.T @ (K.T) @ (Pz22.T @ (kron_AA @ z2))
+    
+    # Last two terms involve the u–dependent part.
+    # Compute (A ⊗ (B u) + (B u) ⊗ A)
+    kron_A_Bu = np.kron(A, Bu)
+    kron_Bu_A = np.kron(Bu, A)
+    kron_term = kron_A_Bu + kron_Bu_A
+    
+    T2_5 = z1.T @ (K.T) @ (Pz22 @ (kron_term @ z1))
+    T2_6 = z1.T @ (K.T) @ (Pz22.T @ (kron_term @ z1))
+    
+    # Sum all components to form the derivative term:
+    result = T2_1 + T2_2 + T2_3 + T2_4 + T2_5 + T2_6
+    return result
 
 def term3(u, params):
     """
     Implements the derivative:
-    ∂/∂u [ 2 z(t)^T ẐA(t)^T P^z(t+1) Ẑu(t) ]
-    = 2 [ B^T Pz11^T A z1 + B^T Pz21 ( (A⊗A) z2 )
+    ∂/∂u [ 2 z(t)^T A_tilde(t)^T P^z(t+1) u_tilde(t) ]
+    = 2 [ B^T Pz11^T A z1 
+         + B^T Pz21 ( (A⊗A) z2 )
          + B^T Pz21^T ( (A⊗(B u) + (B u)⊗A) z1 )
          + z1^T ( (A⊗B + B⊗A)^T Pz21 B u )
          + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz12^T A z1 ) )
@@ -157,7 +184,7 @@ def newton_method(u0, params, k):
     for iteration in range(k):
         grad = F(u, params)
         Hessian = approx_hessian(u, F, params)
-        # Solve for the Newton step: Hessian * delta = grad
+        # delta = grad / Hessian
         delta = np.linalg.solve(Hessian, grad)
         u = u - delta
         print("Iteration {}: u = {}".format(iteration+1, u))
@@ -167,20 +194,31 @@ def newton_method(u0, params, k):
 if __name__ == "__main__":
     # Example parameters
     n = 3  # state dimension
-    m = 2  # control dimension
+    n_aug = n**2  # augmented state dimension
+    p = 2  # control input dimension
+    p_aug = p**2  # augmented control input dimension
     u0 = np.random.rand(n)  # initial guess for u
+    
+    # Pz(t+1) = [[Pz11(t+1), Pz12(t+1)], 
+    #            [Pz21(t+1), Pz22(t+1)]]
+    
+    # z(t) = [z1(t), z2(t)]
+    
     params = {
         'z1': np.random.rand(n), # augmented state vector
+        'z2': np.random.rand(n_aug), # augmented state vector
         'A': np.random.rand(n, n), # state transition matrix
-        'B': np.random.rand(n, m), # control input matrix
-        'Q': np.random.rand(n, n),  # cost matrix for state
-        'R': np.random.rand(m, m),  # cost matrix for control inputs
+        'B': np.random.rand(n, p), # control input matrix
+        'Q': np.random.rand(n + n**2, n + n**2),  # cost matrix for state
+        'R': np.random.rand(p, p),  # cost matrix for control inputs
+        
+        # to be figured out:
         'Pz11': np.random.rand(n, n), # cost-to-go matrix, element 1
         'Pz21': np.random.rand(n, n), # cost-to-go matrix, element 2
         'Pz12': np.random.rand(n, n), # cost-to-go matrix, element 3
         'Pz22': np.random.rand(n, n), # cost-to-go matrix, element 4
         'W': np.random.rand(n, n),  # covariance matrix for process noise
-        'V': np.random.rand(m, m),   # covariance matrix for control
+        'V': np.random.rand(n, n),   # covariance matrix for control
     }
     
     k = 10  # number of iterations
