@@ -1,0 +1,194 @@
+import numpy as np
+
+def Vec(X):
+    """Vectorize a matrix X (column-major ordering)."""
+    return X.flatten('F')
+
+def term2(u, params):
+    """
+    Implements:
+    ∂/∂u [ z(t)^T ẐA(t)^T P^z(t+1) ẐA(t) z(t) ]
+    = z1^T (A⊗B + B⊗A)^T Pz22 (A⊗(B u) + (B u)⊗A) z1
+      + z1^T (A⊗B + B⊗A)^T Pz22^T (A⊗(B u) + (B u)⊗A) z1
+    (Note: The other four terms are independent of u and hence drop out of the gradient.)
+    """
+    z1 = params['z1']        # vector (n,)
+    A  = params['A']         # matrix (n x n)
+    B  = params['B']         # matrix (n x p)
+    Pz22 = params['Pz22']     # matrix of appropriate dimension
+    Bu = B @ u              # (n,)
+    
+    # Compute K = A ⊗ B + B ⊗ A
+    K = np.kron(A, B) + np.kron(B, A)
+    # Compute the u–dependent part: (A ⊗ (B u) + (B u) ⊗ A)
+    term_inside = np.kron(A, Bu) + np.kron(Bu, A)
+    
+    # Two contributions (using both Pz22 and its transpose)
+    out1 = z1.T @ K.T @ Pz22 @ term_inside @ z1
+    out2 = z1.T @ K.T @ Pz22.T @ term_inside @ z1
+    return out1 + out2
+
+def term3(u, params):
+    """
+    Implements the derivative:
+    ∂/∂u [ 2 z(t)^T ẐA(t)^T P^z(t+1) Ẑu(t) ]
+    = 2 [ B^T Pz11^T A z1 + B^T Pz21 ( (A⊗A) z2 )
+         + B^T Pz21^T ( (A⊗(B u) + (B u)⊗A) z1 )
+         + z1^T ( (A⊗B + B⊗A)^T Pz21 B u )
+         + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz12^T A z1 ) )
+         + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz22^T ( (A⊗(B u) + (B u)⊗A) z1 ) ) )
+         + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz22^T ( (A⊗A) z2 ) ) )
+         + z1^T ( (A⊗B + B⊗A)^T Pz22 Vec(B u u^T B^T + W) ) ]
+    """
+    z1 = params['z1']         # (n,)
+    A  = params['A']          # (n x n)
+    B  = params['B']          # (n x p)
+    Pz11 = params['Pz11']
+    Pz21 = params['Pz21']
+    Pz12 = params['Pz12']
+    Pz22 = params['Pz22']
+    W = params['W']
+    p = B.shape[1]
+    
+    Bu = B @ u               # (n,)
+    # For the term with z2:
+    z2 = params['z2']        # (n^2,) (assuming proper stacking)
+    
+    # T3_1: 2 * B^T Pz11^T A z1
+    T3_1 = 2 * (B.T @ Pz11.T @ (A @ z1))
+    # T3_2: 2 * B^T Pz21 ( (A⊗A) z2 )
+    T3_2 = 2 * (B.T @ Pz21 @ (np.kron(A, A) @ z2))
+    # T3_3: 2 * B^T Pz21^T ( (A⊗(B u) + (B u)⊗A) z1 )
+    T3_3 = 2 * (B.T @ Pz21.T @ ((np.kron(A, Bu) + np.kron(Bu, A)) @ z1))
+    # T3_4: 2 * z1^T ( (A⊗B + B⊗A)^T Pz21 (B u) )
+    T3_4 = 2 * (z1.T @ (np.kron(A, B) + np.kron(B, A)).T @ Pz21 @ (B @ u))
+    
+    I_p = np.eye(p)
+    kron_term = np.kron(B, B)
+    # T3_5: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz12^T A z1 ) )
+    T3_5 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz12.T @ (A @ z1)))
+    # T3_6: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz22^T ( (np.kron(A, Bu)+np.kron(Bu, A)) z1 ) ) )
+    T3_6 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22.T @ ((np.kron(A, Bu) + np.kron(Bu, A)) @ z1)))
+    # T3_7: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz22^T ( (A⊗A) z2 ) ) )
+    T3_7 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22.T @ (np.kron(A, A) @ z2)))
+    # T3_8: 2 * z1^T ( (A⊗B + B⊗A)^T Pz22 Vec(B u u^T B^T + W) )
+    # Here we approximate B u u^T B^T by outer(Bu, Bu)
+    vec_term = Vec(np.outer(Bu, Bu) + W)
+    T3_8 = 2 * (z1.T @ (np.kron(A, B) + np.kron(B, A)).T @ Pz22 @ vec_term)
+    
+    return T3_1 + T3_2 + T3_3 + T3_4 + T3_5 + T3_6 + T3_7 + T3_8
+
+def term4(u, params):
+    """
+    Implements the derivative:
+    ∂/∂u [ ũ(t)^T P ũ(t) ]
+    = 2 B^T Pz11 B u
+      + (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz21 B u
+      + (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz12^T B u
+      + B^T Pz21^T Vec(B u u^T B^T + W)
+      + B^T Pz12 Vec(B u u^T B^T + W)
+      + (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz22 Vec(B u u^T B^T + W)
+      + (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz22^T Vec(B u u^T B^T + W)
+    """
+    B = params['B']         # (n x p)
+    p = B.shape[1]
+    Pz11 = params['Pz11']
+    Pz21 = params['Pz21']
+    Pz12 = params['Pz12']
+    Pz22 = params['Pz22']
+    W = params['W']
+    
+    Bu = B @ u              # (n,)
+    I_p = np.eye(p)
+    kron_term = np.kron(B, B)
+    
+    # T4_1: 2 * B^T Pz11 B u
+    T4_1 = 2 * (B.T @ Pz11 @ (B @ u))
+    # T4_2: (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz21 B u
+    T4_2 = (np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz21 @ (B @ u))
+    # T4_3: (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz12^T B u
+    T4_3 = (np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz12.T @ (B @ u))
+    
+    # Compute Vec(B u u^T B^T + W); here we use outer(Bu, Bu)
+    vec_term = Vec(np.outer(Bu, Bu) + W)
+    
+    # T4_4: B^T Pz21^T Vec(B u u^T B^T + W)
+    T4_4 = B.T @ Pz21.T @ vec_term
+    # T4_5: B^T Pz12 vec_term
+    T4_5 = B.T @ Pz12 @ vec_term
+    # T4_6: (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz22 vec_term
+    T4_6 = (np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22 @ vec_term)
+    # T4_7: (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz22^T vec_term
+    T4_7 = (np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22.T @ vec_term)
+    
+    return T4_1 + T4_2 + T4_3 + T4_4 + T4_5 + T4_6 + T4_7
+
+def F(u, params):
+    """
+    Total gradient F(u) = 2 R u + term2 + term3 + term4.
+    Here R is assumed provided in params.
+    """
+    R = params['R']
+    term1 = 2 * R @ u
+    t2 = term2(u, params)
+    t3 = term3(u, params)
+    t4 = term4(u, params)
+    return term1 + t2 + t3 + t4
+
+def approx_hessian(u, F_func, params, epsilon=1e-6):
+    """
+    Approximate Hessian H(u) = dF/du using finite differences.
+    """
+    n = len(u)
+    H = np.zeros((n, n))
+    f0 = F_func(u, params)
+    for i in range(n):
+        u_eps = u.copy()
+        u_eps[i] += epsilon
+        f1 = F_func(u_eps, params)
+        H[:, i] = (f1 - f0) / epsilon
+    return H
+
+def newton_method(u0, params, k):
+    """
+    Run Newton's method for k iterations to solve F(u)=0.
+    """
+    u = u0.copy()
+    for iteration in range(k):
+        grad = F(u, params)
+        Hessian = approx_hessian(u, F, params)
+        # Solve for the Newton step: Hessian * delta = grad
+        delta = np.linalg.solve(Hessian, grad)
+        u = u - delta
+        print("Iteration {}: u = {}".format(iteration+1, u))
+    return u
+
+# main
+if __name__ == "__main__":
+    # Example parameters
+    n = 3  # state dimension
+    m = 2  # control dimension
+    u0 = np.random.rand(n)  # initial guess for u
+    params = {
+        'z1': np.random.rand(n), # augmented state vector
+        'A': np.random.rand(n, n), # state transition matrix
+        'B': np.random.rand(n, m), # control input matrix
+        'Q': np.random.rand(n, n),  # cost matrix for state
+        'R': np.random.rand(m, m),  # cost matrix for control inputs
+        'Pz11': np.random.rand(n, n), # cost-to-go matrix, element 1
+        'Pz21': np.random.rand(n, n), # cost-to-go matrix, element 2
+        'Pz12': np.random.rand(n, n), # cost-to-go matrix, element 3
+        'Pz22': np.random.rand(n, n), # cost-to-go matrix, element 4
+        'W': np.random.rand(n, n),  # covariance matrix for process noise
+        'V': np.random.rand(m, m),   # covariance matrix for control
+    }
+    
+    k = 10  # number of iterations
+    result = newton_method(u0, params, k)
+    print("Final result: u =", result)
+    
+    
+# to be checked and tested:
+#   - check if the expression for term2, term3, and term4 are correct
+#   - check if the gradient and Hessian are correct
+#   - check if the test result is reasonable
