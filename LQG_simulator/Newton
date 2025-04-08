@@ -16,7 +16,6 @@ def term2(u, params):
          + z1^T (A ⊗ B + B ⊗ A)^T Pz22 (A ⊗ (B u) + (B u) ⊗ A) z1
          + z1^T (A ⊗ B + B ⊗ A)^T Pz22^T (A ⊗ (B u) + (B u) ⊗ A) z1
     """
-    # Unpack the parameters
     z1   = params['z1']    # z₁(t), assumed shape (n,)
     z2   = params['z2']    # z₂(t), assumed shape (n^2,)
     A    = params['A']     # matrix A, shape (n, n)
@@ -25,23 +24,19 @@ def term2(u, params):
     Pz12 = params['Pz12']  # block of P^z(t+1)
     Pz22 = params['Pz22']  # block of P^z(t+1)
     
-    # Compute B u(t)
     Bu = B @ u  # shape (n,)
     
-    # Compute the Kronecker sum K = (A ⊗ B + B ⊗ A)
+    # K = (A ⊗ B + B ⊗ A)
     K = np.kron(A, B) + np.kron(B, A)
     
-    # First two terms (independent of u):
     print(z1.T.shape, K.T.shape, Pz21.shape, A.shape, z1.shape)
     T2_1 = z1.T @ (K.T) @ (Pz21 @ (A @ z1))
     T2_2 = z1.T @ K @ (Pz12.T @ (A @ z1))
     
-    # Next two terms (using (A ⊗ A) applied to z2):
     kron_AA = np.kron(A, A)
     T2_3 = z1.T @ (K.T) @ (Pz22 @ (kron_AA @ z2))
     T2_4 = z1.T @ (K.T) @ (Pz22.T @ (kron_AA @ z2))
     
-    # Last two terms involve the u–dependent part.
     # Compute (A ⊗ (B u) + (B u) ⊗ A)
     kron_A_Bu = np.kron(A, Bu)
     kron_Bu_A = np.kron(Bu, A)
@@ -50,7 +45,7 @@ def term2(u, params):
     T2_5 = z1.T @ (K.T) @ (Pz22 @ (kron_term @ z1))
     T2_6 = z1.T @ (K.T) @ (Pz22.T @ (kron_term @ z1))
     
-    # Sum all components to form the derivative term:
+    # sum all components
     result = T2_1 + T2_2 + T2_3 + T2_4 + T2_5 + T2_6
     return result
 
@@ -78,7 +73,6 @@ def term3(u, params):
     p = B.shape[1]
     
     Bu = B @ u               # (n,)
-    # For the term with z2:
     z2 = params['z2']        # (n^2,) (assuming proper stacking)
     
     # T3_1: 2 * B^T Pz11^T A z1
@@ -99,7 +93,7 @@ def term3(u, params):
     # T3_7: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz22^T ( (A⊗A) z2 ) ) )
     T3_7 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22.T @ (np.kron(A, A) @ z2)))
     # T3_8: 2 * z1^T ( (A⊗B + B⊗A)^T Pz22 Vec(B u u^T B^T + W) )
-    # Here we approximate B u u^T B^T by outer(Bu, Bu)
+    # approximate B u u^T B^T by outer(Bu, Bu)
     vec_term = Vec(np.outer(Bu, Bu) + W)
     T3_8 = 2 * (z1.T @ (np.kron(A, B) + np.kron(B, A)).T @ Pz22 @ vec_term)
     
@@ -136,7 +130,7 @@ def term4(u, params):
     # T4_3: (I_p⊗u^T + u^T⊗I_p)(B⊗B)^T Pz12^T B u
     T4_3 = (np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz12.T @ (B @ u))
     
-    # Compute Vec(B u u^T B^T + W); here we use outer(Bu, Bu)
+    # Vec(B u u^T B^T + W)
     vec_term = Vec(np.outer(Bu, Bu) + W)
     
     # T4_4: B^T Pz21^T Vec(B u u^T B^T + W)
@@ -214,11 +208,11 @@ if __name__ == "__main__":
         
         # to be figured out:
         'Pz11': np.random.rand(n, n), # cost-to-go matrix, element 1
-        'Pz21': np.random.rand(n, n), # cost-to-go matrix, element 2
-        'Pz12': np.random.rand(n, n), # cost-to-go matrix, element 3
-        'Pz22': np.random.rand(n, n), # cost-to-go matrix, element 4
-        'W': np.random.rand(n, n),  # covariance matrix for process noise
-        'V': np.random.rand(n, n),   # covariance matrix for control
+        'Pz21': np.random.rand(n**2, n), # cost-to-go matrix, element 2
+        'Pz12': np.random.rand(n, n**2), # cost-to-go matrix, element 3
+        'Pz22': np.random.rand(n**2, n**2), # cost-to-go matrix, element 4
+        'W': np.random.rand(n, n),  # covariance matrix for process noise w 
+        # 'V': np.random.rand(n, n),   # covariance matrix for measurement noise v
     }
     
     k = 10  # number of iterations
