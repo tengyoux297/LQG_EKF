@@ -7,95 +7,122 @@ def Vec(X):
 
 def term2(u, params):
     """
-    Implements:
-    ∂/∂u(t) [ z^T A_tilde^T P^z A_tilde z ]
-       = z1^T (A ⊗ B + B ⊗ A)^T Pz21 A z1
-         + z1^T (A ⊗ B + B ⊗ A) Pz12^T A z1
-         + z1^T (A ⊗ B + B ⊗ A)^T Pz22 (A ⊗ A) z2
-         + z1^T (A ⊗ B + B ⊗ A)^T Pz22^T (A ⊗ A) z2
-         + z1^T (A ⊗ B + B ⊗ A)^T Pz22 (A ⊗ (B u) + (B u) ⊗ A) z1
-         + z1^T (A ⊗ B + B ⊗ A)^T Pz22^T (A ⊗ (B u) + (B u) ⊗ A) z1
+    Computes the gradient of:
+    Φ(u) = z^T A_tilde^T P^z A_tilde z
+    where A_tilde has u-dependence in its 2nd row block (Kronecker structure),
+    and the control-dependent term is:
+        widetilde{u}(t) = [Bu; vec(Bu u^T B^T + W)]
     """
-    z1   = params['z1']    # z₁(t), assumed shape (n,)
-    z2   = params['z2']    # z₂(t), assumed shape (n^2,)
-    A    = params['A']     # matrix A, shape (n, n)
-    B    = params['B']     # matrix B, shape (n, p)
-    Pz21 = params['Pz21']  # block of P^z(t+1)
-    Pz12 = params['Pz12']  # block of P^z(t+1)
-    Pz22 = params['Pz22']  # block of P^z(t+1)
-    
-    Bu = B @ u  # shape (n,)
-    
-    # K = (A ⊗ B + B ⊗ A)
-    K = np.kron(A, B) + np.kron(B, A)
-    
-    print(z1.T.shape, K.T.shape, Pz21.shape, A.shape, z1.shape)
-    T2_1 = z1.T @ (K.T) @ (Pz21 @ (A @ z1))
-    T2_2 = z1.T @ K @ (Pz12.T @ (A @ z1))
-    
-    kron_AA = np.kron(A, A)
-    T2_3 = z1.T @ (K.T) @ (Pz22 @ (kron_AA @ z2))
-    T2_4 = z1.T @ (K.T) @ (Pz22.T @ (kron_AA @ z2))
-    
-    # Compute (A ⊗ (B u) + (B u) ⊗ A)
-    kron_A_Bu = np.kron(A, Bu)
-    kron_Bu_A = np.kron(Bu, A)
-    kron_term = kron_A_Bu + kron_Bu_A
-    
-    T2_5 = z1.T @ (K.T) @ (Pz22 @ (kron_term @ z1))
-    T2_6 = z1.T @ (K.T) @ (Pz22.T @ (kron_term @ z1))
-    
-    # sum all components
-    result = T2_1 + T2_2 + T2_3 + T2_4 + T2_5 + T2_6
-    return result
+    z1   = params['z1']    # shape (n, 1)
+    z2   = params['z2']    # shape (n^2, 1)
+    A    = params['A']     # shape (n, n)
+    B    = params['B']     # shape (n, p)
+    Pz11 = params['Pz11']  # shape (n, n)
+    Pz12 = params['Pz12']  # shape (n, n^2)
+    Pz21 = params['Pz21']  # shape (n^2, n)
+    Pz22 = params['Pz22']  # shape (n^2, n^2)
+
+    Bu = (B @ u ).reshape(-1, 1)                  # shape (n, 1)
+    kron_AA = np.kron(A, A)       # shape (n^2, n^2)
+
+    Atilde_21 = np.kron(Bu, A) + np.kron(A, Bu)  # shape (n^2, n)
+
+    z1_proj = A @ z1                          # shape (n, 1)
+    z2_proj = Atilde_21 @ z1 + kron_AA @ z2   # shape (n^2,)
+    upper_part = Pz11 @ z1_proj + Pz21 @ z2_proj        # shape (n,)
+    lower_part = Pz12 @ z1_proj + Pz22 @ z2_proj        # shape (n^2,)
+    full_proj = np.concatenate([upper_part, lower_part])  # shape (n + n^2,)
+
+    n, p = B.shape
+    I_p = np.eye(p)
+    I_n = np.eye(n)
+    kron_term = (np.kron(I_p, u.T) + np.kron(u.T, I_p)).T   # shape (p^2, p)
+    du2_du = (np.kron(B, B) @ kron_term)                # shape (n^2, p)
+
+    dutilde_du = np.vstack([B, du2_du])  # shape ((n + n^2), p)
+
+    grad = 2 * dutilde_du.T @ full_proj  # shape (p,)  
+    return grad
+
+import numpy as np
+
+def Vec(X):
+    """Vectorize matrix X to a column vector."""
+    return np.reshape(X, (-1, 1))
 
 def term3(u, params):
     """
-    Implements the derivative:
-    ∂/∂u [ 2 z(t)^T A_tilde(t)^T P^z(t+1) u_tilde(t) ]
-    = 2 [ B^T Pz11^T A z1 
-         + B^T Pz21 ( (A⊗A) z2 )
-         + B^T Pz21^T ( (A⊗(B u) + (B u)⊗A) z1 )
-         + z1^T ( (A⊗B + B⊗A)^T Pz21 B u )
-         + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz12^T A z1 ) )
-         + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz22^T ( (A⊗(B u) + (B u)⊗A) z1 ) ) )
-         + ( (I_p⊗u^T + u^T⊗I_p) ( (B⊗B)^T Pz22^T ( (A⊗A) z2 ) ) )
-         + z1^T ( (A⊗B + B⊗A)^T Pz22 Vec(B u u^T B^T + W) ) ]
-    """
-    z1 = params['z1']         # (n,)
-    A  = params['A']          # (n x n)
-    B  = params['B']          # (n x p)
-    Pz11 = params['Pz11']
-    Pz21 = params['Pz21']
-    Pz12 = params['Pz12']
-    Pz22 = params['Pz22']
-    W = params['W']
-    p = B.shape[1]
+    Computes the derivative:
+      ∂/∂u [ 2 z(t)^T A_tilde(t)^T P^z(t+1) u_tilde(t) ]
+    where
+      A_tilde(t) = [ A,             0;
+                     (B u)⊗A + A⊗(B u),  A⊗A ]
+      u_tilde(t) = [ B u;
+                     vec(B u u^T B^T + W) ]
+    and where P^z(t+1) is partitioned into blocks Pz11, Pz12, Pz21, Pz22.
     
-    Bu = B @ u               # (n,)
-    z2 = params['z2']        # (n^2,) (assuming proper stacking)
+    The derivative is (schematically) given by the sum of eight terms:
+    
+      T3_1 = 2 * B^T Pz11^T (A z1)
+      T3_2 = 2 * B^T Pz21 ( (A⊗A) z2 )
+      T3_3 = 2 * B^T Pz21^T ( (A⊗(B u) + (B u)⊗A) z1 )
+      T3_4 = 2 * [ ( (A⊗B + B⊗A)^T Pz21 (B u) )^T z1 ]
+      T3_5 = 2 * [ ( (I_p⊗u^T + u^T⊗I_p)^T (B⊗B)^T Pz12^T (A z1) ) ]
+      T3_6 = 2 * [ ( (I_p⊗u^T + u^T⊗I_p)^T (B⊗B)^T Pz22^T ( (A⊗(B u) + (B u)⊗A) z1 ) ) ]
+      T3_7 = 2 * [ ( (I_p⊗u^T + u^T⊗I_p)^T (B⊗B)^T Pz22^T ( (A⊗A) z2 ) ) ]
+      T3_8 = 2 * [ ( (A⊗B + B⊗A)^T Pz22 vec(B u u^T B^T + W) )^T z1 ]
+    
+    In this implementation the terms T3_4 and T3_8 have been reordered (using transposition) so that the 
+    inner dimensions match.
+    """
+    # Extract parameters
+    z1   = params['z1']      # (n, 1)
+    z2   = params['z2']      # (n^2, 1)
+    A    = params['A']       # (n, n)
+    B    = params['B']       # (n, p)
+    Pz11 = params['Pz11']    # (n, n)
+    Pz21 = params['Pz21']    # (n^2, n)
+    Pz12 = params['Pz12']    # (n, n^2)
+    Pz22 = params['Pz22']    # (n^2, n^2)
+    W    = params['W']       # (n, n)
+    p    = B.shape[1]
+    
+    Bu = B @ u              # (n, 1)
     
     # T3_1: 2 * B^T Pz11^T A z1
     T3_1 = 2 * (B.T @ Pz11.T @ (A @ z1))
+    
     # T3_2: 2 * B^T Pz21 ( (A⊗A) z2 )
     T3_2 = 2 * (B.T @ Pz21 @ (np.kron(A, A) @ z2))
+    
     # T3_3: 2 * B^T Pz21^T ( (A⊗(B u) + (B u)⊗A) z1 )
     T3_3 = 2 * (B.T @ Pz21.T @ ((np.kron(A, Bu) + np.kron(Bu, A)) @ z1))
-    # T3_4: 2 * z1^T ( (A⊗B + B⊗A)^T Pz21 (B u) )
-    T3_4 = 2 * (z1.T @ (np.kron(A, B) + np.kron(B, A)).T @ Pz21 @ (B @ u))
+    
+    # T3_4: 2 * [ ( (A⊗B + B⊗A)^T Pz21 (B u) )^T z1 ]
+    temp_T3_4 = (np.kron(A, B) + np.kron(B, A)).T @ (Pz21 @ (B @ u))  # expected shape: (n, 1)
+    T3_4 = 2 * (temp_T3_4.T @ z1)  # produces a scalar or (1,1) array, which we treat as (p,1) after combination
     
     I_p = np.eye(p)
-    kron_term = np.kron(B, B)
-    # T3_5: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz12^T A z1 ) )
-    T3_5 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz12.T @ (A @ z1)))
-    # T3_6: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz22^T ( (np.kron(A, Bu)+np.kron(Bu, A)) z1 ) ) )
-    T3_6 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22.T @ ((np.kron(A, Bu) + np.kron(Bu, A)) @ z1)))
-    # T3_7: 2 * ( (I_p⊗u^T + u^T⊗I_p) ( kron(B, B)^T Pz22^T ( (A⊗A) z2 ) ) )
-    T3_7 = 2 * ((np.kron(I_p, u.T) + np.kron(u.T, I_p)) @ (kron_term.T @ Pz22.T @ (np.kron(A, A) @ z2)))
-    # T3_8: 2 * z1^T ( (A⊗B + B⊗A)^T Pz22 Vec(B u u^T B^T + W) )
-    # approximate B u u^T B^T by outer(Bu, Bu)
-    vec_term = Vec(np.outer(Bu, Bu) + W)
-    T3_8 = 2 * (z1.T @ (np.kron(A, B) + np.kron(B, A)).T @ Pz22 @ vec_term)
+    # Ensure u is a column vector
+    u_col = u.reshape(-1, 1)
+    J = (np.kron(I_p, u_col.T) + np.kron(u_col.T, I_p)).T  # shape (p^2, p)
+    
+    # kron_term for (B⊗B)
+    kron_term = np.kron(B, B)  # if B is (n, p), then kron_term is (n^2, p^2)
+    
+    # T3_5: 2 * [ (I_p⊗u^T + u^T⊗I_p)^T (B⊗B)^T Pz12^T (A z1) ]
+    T3_5 = 2 * (J @ (kron_term.T @ Pz12.T @ (A @ z1)))
+    
+    # T3_6: 2 * [ (I_p⊗u^T + u^T⊗I_p)^T (B⊗B)^T Pz22^T ( (A⊗(B u) + (B u)⊗A) z1 ) ]
+    T3_6 = 2 * (J @ (kron_term.T @ Pz22.T @ ((np.kron(A, Bu) + np.kron(Bu, A)) @ z1)))
+    
+    # T3_7: 2 * [ (I_p⊗u^T + u^T⊗I_p)^T (B⊗B)^T Pz22^T ( (A⊗A) z2 ) ]
+    T3_7 = 2 * (J @ (kron_term.T @ Pz22.T @ (np.kron(A, A) @ z2)))
+    
+    # T3_8: 2 * [ ( (A⊗B + B⊗A)^T Pz22 vec(B u u^T B^T + W) )^T z1 ]
+    vec_term = Vec(np.outer(Bu, Bu) + W)  # shape (n^2, 1)
+    temp_T3_8 = (np.kron(A, B) + np.kron(B, A)).T @ (Pz22 @ vec_term)  # expected shape: (n, 1)
+    T3_8 = 2 * (temp_T3_8.T @ z1)
     
     return T3_1 + T3_2 + T3_3 + T3_4 + T3_5 + T3_6 + T3_7 + T3_8
 
@@ -188,19 +215,17 @@ def newton_method(u0, params, k):
 if __name__ == "__main__":
     # Example parameters
     n = 3  # state dimension
-    n_aug = n**2  # augmented state dimension
     p = 2  # control input dimension
-    p_aug = p**2  # augmented control input dimension
-    u0 = np.random.rand(n)  # initial guess for u
     
-    # Pz(t+1) = [[Pz11(t+1), Pz12(t+1)], 
-    #            [Pz21(t+1), Pz22(t+1)]]
+    u0 = np.random.rand(p, 1)  # initial guess for u
+    x = np.random.rand(n, 1)  # state vector
     
-    # z(t) = [z1(t), z2(t)]
+    z1 = x  # augmented state vector
+    z2 = (Vec(x @ (x.T)).T).reshape(-1,1)  # augmented state vector (assuming x is a column vector)
     
     params = {
-        'z1': np.random.rand(n), # augmented state vector
-        'z2': np.random.rand(n_aug), # augmented state vector
+        'z1': z1, # augmented state vector
+        'z2': z2, # augmented state vector
         'A': np.random.rand(n, n), # state transition matrix
         'B': np.random.rand(n, p), # control input matrix
         'Q': np.random.rand(n + n**2, n + n**2),  # cost matrix for state
@@ -208,8 +233,8 @@ if __name__ == "__main__":
         
         # to be figured out:
         'Pz11': np.random.rand(n, n), # cost-to-go matrix, element 1
-        'Pz21': np.random.rand(n**2, n), # cost-to-go matrix, element 2
-        'Pz12': np.random.rand(n, n**2), # cost-to-go matrix, element 3
+        'Pz21': np.random.rand(n, n**2), # cost-to-go matrix, element 2
+        'Pz12': np.random.rand(n**2, n), # cost-to-go matrix, element 3
         'Pz22': np.random.rand(n**2, n**2), # cost-to-go matrix, element 4
         'W': np.random.rand(n, n),  # covariance matrix for process noise w 
         # 'V': np.random.rand(n, n),   # covariance matrix for measurement noise v
