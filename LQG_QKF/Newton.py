@@ -168,11 +168,12 @@ def approx_hessian(u, F_func, params, epsilon=1e-6):
         H[:, i, :] = ((f1 - f0) / epsilon)
     return H
 
-def newton_method(u0, params, k):
+def newton_method(u0, params, epsilon=1e-6, k=1000):
     """
     Run Newton's method for k iterations to solve F(u)=0.
     """
-    u = u0.copy()
+    diff_list = []
+    u = u0.copy() # initial guess for u
     for iteration in range(k):
         print(f"Iteration {iteration+1}")
         grad = F(u, params)
@@ -180,6 +181,23 @@ def newton_method(u0, params, k):
         # delta = grad / Hessian
         delta = np.linalg.solve(np.squeeze(Hessian), np.squeeze(grad)).reshape(-1, 1)
         u = u - delta  # update u
+        diff = np.linalg.norm(delta)
+        diff_list.append(diff)
+        if diff < epsilon:
+            print(f"Converged at iteration {iteration+1} with diff {diff} < {epsilon}")
+            break
+    # plot convergence
+    import matplotlib.pyplot as plt
+    plt.plot(diff_list, label='Convergence')
+    plt.xlabel('Iteration')
+    plt.ylabel('Difference')
+    plt.title('Convergence of Newton\'s Method')
+    plt.legend()
+    plt.grid()
+    plt.savefig('newton_methd_convergence_plot.png')
+    print('last diff:', diff_list[-1])
+    # plt.show()
+    
     return u
 
 # main
@@ -209,8 +227,8 @@ if __name__ == "__main__":
         # 'V': np.random.rand(n, n),   # covariance matrix for measurement noise v
     }
     
-    k = 10  # number of iterations
-    result = newton_method(u0, params, k)
+    k = 100  # number of iterations
+    result = newton_method(u0, params)
     print("Final result: u =", result)
     
     

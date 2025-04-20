@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from kinematics import *
 from sensors import *
 from utils import *
-from LQG import LQG
+from LQG_QKF.LQG_QKF import LQG
 from time import sleep
 import tqdm
 from typing import Literal
