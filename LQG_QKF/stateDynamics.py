@@ -13,7 +13,7 @@ class StateDynamics(object):
     Initializes the class
     """
     self.x = np.zeros((n,1)) # state vector
-    self.u = np.zeros((p,1)) # control input vector
+    self.u = np.ones((p,1)) # control input vector
     
     assert W.shape[0] == n, "W must be a square matrix of size n x n"
     assert W.shape[1] == n, "W must be a square matrix of size n x n"
@@ -26,6 +26,7 @@ class StateDynamics(object):
     self.t = 0 # time step
     self.trajectory = [] # trajectory of the system
     self.trajectory.append([self.x, self.u, self.w]) # append initial state and control input to trajectory
+  
   def get_state_size(self):
     return self.n
  
@@ -62,6 +63,12 @@ class StateDynamics(object):
     '''
     return self.x 
   
+  def set_control(self, u):
+    '''
+    set control input vector
+    '''
+    self.u = u
+  
   def get_current_control(self):
     '''
     current control input vector
@@ -74,11 +81,10 @@ class StateDynamics(object):
     '''
     return self.trajectory
   
-  def forward(self, u):
+  def forward(self):
     '''
     Forward kinematics of the system.
     '''
-    self.u = u # update control input vector
     self.w = np.random.multivariate_normal(np.zeros(self.W.shape[0]), self.W)
     x1 = self.A @ self.x + self.B @ self.u + self.w # shape (n,1) 
     self.x = x1 # update state vector
@@ -97,6 +103,37 @@ class StateDynamics(object):
     z = (np.concatenate([z1.T, z2.T], axis=1)).T # shape (n+n^2, 1)
     return z, z1, z2
   
+  def mu_tilde(self): # mu_tilde
+    Bu = self.B @ self.u # shape (n,1)
+    term1 = Bu # shape (n,1)
+    term2 = Vec(Bu @ Bu.T + self.W) # shape (n^2, 1) 
+    u_tilde = np.vstack((term1, term2)) # shape (n+n^2, 1)
+    return u_tilde # shape (n+n^2, 1)
+  
+  def aug_process_noise_covar(self):
+    n = self.n # state size
+    Sigma = self.W # shape (n,n)
+    I_n = np.eye(n) # shape (n,n)
+    Mu = self.B @ self.u # shape (n,1)
+    Gamma = np.kron(I_n, (Mu + self.A @ self.x)) + np.kron((Mu + self.A @ self.x), I_n) # shape (n^2,n)
+    Lambda = np.zeros((n**2, n**2))
+    for i in range(n):
+        for j in range(n):
+            row = i * n + j   # vec index of (i, j)
+            col = j * n + i   # vec index of (j, i)
+            Lambda[row, col] = 1   # single 1 per row/col
+    Sigma11 = Sigma # shape (n,n)
+    Sigma12 = Sigma @ Gamma.T # shape (n,n^2)
+    Sigma21 = Gamma @ Sigma # shape (n^2,n)
+    Sigma22 = Gamma @ Sigma @ Gamma.T + (np.eye(n**2) + Lambda) @ np.kron(Sigma, Sigma) # shape (n^2,n^2)
+    
+    Sigma_tilde = np.zeros((n+n**2, n+n**2)) # shape (n+n^2,n+n^2)
+    Sigma_tilde[:n, :n] = Sigma11
+    Sigma_tilde[:n, n:] = Sigma12
+    Sigma_tilde[n:, :n] = Sigma21
+    Sigma_tilde[n:, n:] = Sigma22
+    return Sigma_tilde.astype(np.float64) # shape (n+n^2,n+n^2)
+  
   def get_A_tilde(self):
     '''
     Augmented state transition matrix
@@ -108,24 +145,25 @@ class StateDynamics(object):
     A12 = np.zeros((n, n**2)) # shape (n,n^2)
     A21 = np.kron(Bu, A) + np.kron(A, Bu) # shape (n^2,n)
     A22 = np.kron(A, A) # shape (n^2,n^2)
-    A_tilde = np.zeros(n+n**2, n+n**2) # shape (n+n^2,n+n^2)
+    A_tilde = np.zeros((n+n**2, n+n**2)) # shape (n+n^2,n+n^2)
     A_tilde[:n, :n] = A11
     A_tilde[:n, n:] = A12
     A_tilde[n:, :n] = A21
     A_tilde[n:, n:] = A22
     return A_tilde.astype(np.float64) # shape (n+n^2,n+n^2)
 
-def get_B_tilde(self):
-    '''
-    Augmented control input matrix
-    '''
-    n = self.n # state size
-    p = self.p # control input size
-    B = self.B # control input matrix, shape (n,p)
-    Bu = self.B @ self.u # shape (n,1)
-    B_tilde = np.zeros((n+n**2, p)) # shape (n+n^2,p)
-    B_tilde[:n, :] = B # shape (n,p)
-    B_tilde[n:, :] = np.kron(Bu, np.eye(n)) # shape (n^2,p)
+  def get_B_tilde(self): # B_tilde
+    B = self.B # shape (n,p)
+    n, p = B.shape[0], B.shape[1] # state size, control input size
+    mu = B @ self.u            # (n,1)
+
+    # top block
+    B_tilde_1 = B                        # (n, p)
+    # bottom block  ((σᵀ ⊗ I) + (I ⊗ σᵀ)) B
+    kron_sum = (np.kron(mu, np.eye(n)) + np.kron(np.eye(n), mu))        # (n^2, n)
+    # print(kron_sum.shape, B.shape) # (n^2, n) @ (n, p) = (n^2, p)
+    B_tilde_2 = kron_sum @ B                               # (n**2, p)
+    B_tilde = np.vstack([B_tilde_1, B_tilde_2]) # (n+n^2, p)
     return B_tilde.astype(np.float64) # shape (n+n^2,p)
 
 class sensor(object):
@@ -147,7 +185,32 @@ class sensor(object):
     '''
     covariance matrix for process noise v
     '''
-    return self.V
+    return self.V # shape (m,m)
+  
+  def get_measA(self):
+    '''
+    Augmented measurement matrix 1
+    Actualy, this matrix does not exist in our case, but we need it for the QKF, so we define it as a zero matrix.
+    '''
+    return np.zeros((self.m, 1)) # shape (m,1)
+
+  def get_aug_measB(self):
+    '''
+    Augmented measurement matrix 2
+    '''
+    if self.M.ndim != 3:
+        raise ValueError("M_stack must be (m, n, n) or list of (n, n) matrices")
+
+    m, n = self.C.shape[0], self.C.shape[1]  # m = number of measurements, n = state size
+    if self.M.shape[1:] != (n, n) or self.M.shape[0] != m:
+        raise ValueError("Inconsistent shapes between C and M_stack")
+
+    # build the right-hand block: each row i is vec(M[i].T)
+    M_vec_block = self.M.transpose(0, 2, 1).reshape(m, n * n)  # (m, n²)
+
+    # horizontal concatenation
+    C_tilde = np.hstack((self.C, M_vec_block)) # shape (m, n+n^2)
+    return C_tilde    
   
   def measure(self, x):
     '''
@@ -168,4 +231,11 @@ class sensor(object):
                       x_vec)[:, None]      # j  ≡ second state index
                                           # result: (m,) → reshape to (m,1)
     return term1 + term2 + self.v # shape (m,1)
-        
+  
+  def aug_measure(self, z):
+    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V)
+    term1 = self.get_measA() # shape (m,1)
+    term2 = self.get_aug_measB() @ z # shape (m,1)
+    term3 = self.v # shape (m,1)
+    
+    return term1 + term2 + term3 # shape (m,1)
