@@ -13,7 +13,7 @@ class StateDynamics(object):
     Initializes the class
     """
     self.x = np.zeros((n,1)) # state vector
-    self.u = np.ones((p,1)) # control input vector
+    self.u = np.zeros((p,1)) # control input vector
     
     assert W.shape[0] == n, "W must be a square matrix of size n x n"
     assert W.shape[1] == n, "W must be a square matrix of size n x n"
@@ -85,8 +85,8 @@ class StateDynamics(object):
     '''
     Forward kinematics of the system.
     '''
-    self.w = np.random.multivariate_normal(np.zeros(self.W.shape[0]), self.W)
-    x1 = self.A @ self.x + self.B @ self.u + self.w # shape (n,1) 
+    self.w = np.random.multivariate_normal(np.zeros(self.W.shape[0]), self.W).reshape(-1, 1) # process noise vector, shape (n,1)
+    x1 = self.A @ self.x + self.B @ self.u + self.w # shape (n,1)
     self.x = x1 # update state vector
     self.t += 1
     self.trajectory.append([self.x, self.u, self.w]) # append current state and control input to trajectory
@@ -115,6 +115,7 @@ class StateDynamics(object):
     Sigma = self.W # shape (n,n)
     I_n = np.eye(n) # shape (n,n)
     Mu = self.B @ self.u # shape (n,1)
+    # print(f'n: {n}, Mu: {Mu.shape}, Sigma: {Sigma.shape}')
     Gamma = np.kron(I_n, (Mu + self.A @ self.x)) + np.kron((Mu + self.A @ self.x), I_n) # shape (n^2,n)
     Lambda = np.zeros((n**2, n**2))
     for i in range(n):
@@ -123,6 +124,7 @@ class StateDynamics(object):
             col = j * n + i   # vec index of (j, i)
             Lambda[row, col] = 1   # single 1 per row/col
     Sigma11 = Sigma # shape (n,n)
+    # print(f'Sigma: {Sigma.shape}, Gamma: {Gamma.shape}, Lambda: {Lambda.shape}')
     Sigma12 = Sigma @ Gamma.T # shape (n,n^2)
     Sigma21 = Gamma @ Sigma # shape (n^2,n)
     Sigma22 = Gamma @ Sigma @ Gamma.T + (np.eye(n**2) + Lambda) @ np.kron(Sigma, Sigma) # shape (n^2,n^2)
@@ -154,15 +156,14 @@ class StateDynamics(object):
 
   def get_B_tilde(self): # B_tilde
     B = self.B # shape (n,p)
+    u = self.u # shape (p,1)
     n, p = B.shape[0], B.shape[1] # state size, control input size
-    mu = B @ self.u            # (n,1)
-
     # top block
     B_tilde_1 = B                        # (n, p)
     # bottom block  ((σᵀ ⊗ I) + (I ⊗ σᵀ)) B
-    kron_sum = (np.kron(mu, np.eye(n)) + np.kron(np.eye(n), mu))        # (n^2, n)
-    # print(kron_sum.shape, B.shape) # (n^2, n) @ (n, p) = (n^2, p)
-    B_tilde_2 = kron_sum @ B                               # (n**2, p)
+    kron_sum = (np.kron(u, np.eye(p)) + np.kron(np.eye(p), u))        # shape (p^2, p)
+    # B ⊗ B: shape (n^2, p^2)
+    B_tilde_2 = np.kron(B,B) @ kron_sum                             # (n^2, p)
     B_tilde = np.vstack([B_tilde_1, B_tilde_2]) # (n+n^2, p)
     return B_tilde.astype(np.float64) # shape (n+n^2,p)
 
@@ -216,7 +217,7 @@ class sensor(object):
     '''
     measure the state vector x
     '''
-    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V)
+    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1, 1) # measurement noise vector, shape (m,1)
     
     term1 = self.C @ x
     

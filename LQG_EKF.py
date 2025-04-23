@@ -70,19 +70,25 @@ class LQG:
         quad_term = np.clip(x.T @ M @ x, -1e6, 1e6)  # Limit extreme values
         return C @ x + quad_term * np.ones((M.shape[0], 1)) + v
     
-    def update_lqr(self):
-        p_list = [None] * self.H
-        p_list.append(self.Q)
+    def update_lqr(self, infinite_horizon=False):
         print('Calculating LQR...')
-        for k in tqdm.tqdm(range(self.H, 0, -1)):
-            p = self.Q + self.A.T @ p_list[k] @ self.A - self.A.T @ p_list[k] @ self.B @ np.linalg.pinv(self.R + self.B.T @ p_list[k] @ self.B) @ self.B.T @ p_list[k] @ self.A
-            p_list[k-1] = p
-        
-        self.P_lqr = p_list
-        
-        for k in tqdm.tqdm(range(self.H)):
-            feedback_gain = -np.linalg.pinv(self.R + self.B.T @ self.P_lqr[k+1] @ self.B) @ self.B.T @ self.P_lqr[k+1] @ self.A
-            self.control_gain_list.append(feedback_gain)
+        if infinite_horizon: # infinite horizon LQR
+            for k in tqdm.tqdm(range(self.H)):
+                P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q, self.R)  # P is the fixed-point
+                self.P_lqr.append(P_lqr)
+                feedback_gain = -np.linalg.pinv(self.R + self.B.T @ self.P_lqr[-1] @ self.B) @ self.B.T @ self.P_lqr[-1] @ self.A
+                self.control_gain_list.append(feedback_gain)
+        else: # finite horizon LQR
+            N = 100 # number of steps for finite horizon LQR
+            for k in tqdm.tqdm(range(self.H, 0, -1)):
+                p_list = []
+                p_list.append(self.Q)
+                for i in range(1, N):
+                    p = self.Q + self.A.T @ p_list[i-1] @ self.A - self.A.T @ p_list[i-1] @ self.B @ np.linalg.pinv(self.R + self.B.T @ p_list[i-1] @ self.B) @ self.B.T @ p_list[i-1] @ self.A
+                    p_list.append(p)
+                self.P_lqr.append(p_list[-1])
+                feedback_gain = -np.linalg.pinv(self.R + self.B.T @ self.P_lqr[-1] @ self.B) @ self.B.T @ self.P_lqr[-1] @ self.A
+                self.control_gain_list.append(feedback_gain)
         return
     
     def update_lqe(self): 
@@ -154,7 +160,7 @@ class LQG:
         return
     
     def simulate(self, plot=True):
-        self.update_lqr()
+        self.update_lqr(infinite_horizon=True)
         
         self.update_lqe()
         

@@ -175,35 +175,40 @@ class NewtonSolver(object):
             H[:, i, :] = ((f1 - f0) / epsilon)
         return H
 
-    def newton_method(self, u0, params, epsilon=1e-6, max_iter=1000):
+    def newton_method(self, u0, params, epsilon=1e-6, max_iter=1000, verbose=True, plot=True):
         """
         Run Newton's method for k iterations to solve F(u)=0.
         """
         diff_list = []
         u = u0.copy() # initial guess for u
         for iteration in range(max_iter):
-            print(f"Iteration {iteration+1}")
+            # print(f"Iteration {iteration+1}")
             grad = self.F(u, params)
             Hessian = self.approx_hessian(u, self.F, params)
+            # regularise
+            H_reg = np.squeeze(Hessian)
             # delta = grad / Hessian
-            delta = np.linalg.solve(np.squeeze(Hessian), np.squeeze(grad)).reshape(-1, 1)
+            delta = (np.linalg.pinv(H_reg) @ np.squeeze(grad)).reshape(-1,1) # shape (p,1)
             u = u - delta  # update u
             diff = np.linalg.norm(delta)
             diff_list.append(diff)
             if diff < epsilon:
-                print(f"Converged at iteration {iteration+1} with diff {diff} < {epsilon}")
+                if verbose:
+                    print(f"Converged at iteration {iteration+1} with diff {diff} < {epsilon}")
                 break
-        # plot convergence
-        import matplotlib.pyplot as plt
-        plt.plot(diff_list, label='Convergence')
-        plt.xlabel('Iteration')
-        plt.ylabel('Difference')
-        plt.title('Convergence of Newton\'s Method')
-        plt.legend()
-        plt.grid()
-        plt.savefig('LQG_QKF/newton_methd_convergence_plot.png')
-        print('last diff:', diff_list[-1])
-        # plt.show()
+        if plot:
+            # plot convergence
+            import matplotlib.pyplot as plt
+            plt.plot(diff_list, label='Convergence')
+            plt.xlabel('Iteration')
+            plt.ylabel('Difference')
+            plt.title('Convergence of Newton\'s Method')
+            plt.legend()
+            plt.grid()
+            plt.savefig('LQG_QKF/newton_method_convergence_plot.png')
+            if verbose:
+                print('     last diff:', diff_list[-1])
+            plt.show()
         
         return u
 
