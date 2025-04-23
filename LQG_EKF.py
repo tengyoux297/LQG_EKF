@@ -159,8 +159,8 @@ class LQG:
                 self.P_lqe.append(p1)
         return
     
-    def simulate(self, plot=True):
-        self.update_lqr(infinite_horizon=True)
+    def simulate(self, plot=True, infinite_horizon=False):
+        self.update_lqr(infinite_horizon=infinite_horizon)
         
         self.update_lqe()
         
@@ -197,6 +197,7 @@ if __name__ == "__main__":
     m = 4  # Number of sensor states
 
     # Random system matrices
+    np.random.seed(0) # set up random seed for reproducibility
     A_E = np.random.randn(n, n) * 0.1
     A_S = np.random.randn(m, m) * 0.1
     B_Si = np.random.randn(m, m) * 0.1
@@ -216,18 +217,24 @@ if __name__ == "__main__":
     H = 10000
 
     # Create LQG_EKF instance and simulate
-    print('Simulating EKF...')
-    lqg_ekf = LQG(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter='EKF')
-    estimate_error_list_ekf = lqg_ekf.simulate(plot=False)
-    
-    print('Simulating KF...')
-    lqg_kf = LQG(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter='KF')
-    estimate_error_list_kf = lqg_kf.simulate(plot=False)
-    
-    # Plot estimation error
-    plt.plot(estimate_error_list_ekf, label='EKF', marker='o', markersize=1)
-    plt.plot(estimate_error_list_kf, label='KF', marker='o', markersize=1)
+    for inf_hor in [True, False]:
+        print(f'Running simulation with infinite horizon: {inf_hor}')
+        print('Simulating EKF...')
+        label = 'inf_H' if inf_hor else 'f_H'
+        lqg_ekf = LQG(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter='EKF')
+        estimate_error_list_ekf = lqg_ekf.simulate(plot=False, infinite_horizon=inf_hor)
+        
+        print('Simulating KF...')
+        lqg_kf = LQG(A_E, A_S, B_Si, C, Q, R, W_E, W_S, V, M, H, filter='KF')
+        estimate_error_list_kf = lqg_kf.simulate(plot=False, infinite_horizon=inf_hor)
+        
+        # Plot estimation error
+        plt.plot(estimate_error_list_ekf, label=f'EKF-{label}', marker='o', markersize=1)
+        plt.plot(estimate_error_list_kf, label=f'KF-{label}', marker='o', markersize=1)
     plt.xlabel('Time')
     plt.ylabel('Estimation error')
     plt.legend()
-    plt.show()
+    plt.savefig(f'./LQG_EKF_perf.png', dpi=300, bbox_inches='tight')
+    # plt.show()
+    plt.close()
+        
