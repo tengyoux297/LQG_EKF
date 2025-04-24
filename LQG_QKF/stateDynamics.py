@@ -160,7 +160,6 @@ class StateDynamics(object):
     n, p = B.shape[0], B.shape[1] # state size, control input size
     # top block
     B_tilde_1 = B                        # (n, p)
-    # bottom block  ((σᵀ ⊗ I) + (I ⊗ σᵀ)) B
     kron_sum = (np.kron(u, np.eye(p)) + np.kron(np.eye(p), u))        # shape (p^2, p)
     # B ⊗ B: shape (n^2, p^2)
     B_tilde_2 = np.kron(B,B) @ kron_sum                             # (n^2, p)

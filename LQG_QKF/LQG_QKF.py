@@ -216,7 +216,7 @@ def main():
     # Q, R must be symmetric positive definite matrices
     Q = generate_random_symmetric_matrix(n+n**2, scale=1.0)
     R = generate_random_symmetric_matrix(p, scale=1.0)
-    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=10)
+    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=50)
     
     err_list = lqg_qkf_sys.run_sim()
     print("Estimate error list: ", err_list)
