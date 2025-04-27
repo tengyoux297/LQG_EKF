@@ -52,18 +52,15 @@ def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
     if Qf is None:
         Qf = Q.copy()
     P = Qf.copy()
-    K_list = [None]*N
     # backward recursion
     for k in reversed(range(N)):
         G    = R + B.T @ P @ B
         Kk   = np.linalg.solve(G, B.T @ P @ A)
         P    = Q + A.T @ P @ (A - B @ Kk)
-        K_list[k] = Kk
     return P
 
 class LQG_QKF:
-    def __init__(self, F: StateDynamics, S: sensor,
-                 Q, R, H = 50):
+    def __init__(self, F: StateDynamics, S: sensor, Q, R, H = 50):
         
         # dynamics setting
         self.F = F
@@ -139,6 +136,15 @@ class LQG_QKF:
         self.F.set_control(u_new) # update control input vector
         return 
     
+    def update_lqr_orig(self):
+        # LQR update only with original state, no augmented state
+        P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q, self.R)  # P is the fixed-point
+        feedback_gain = -np.linalg.pinv(self.R + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
+        u_new = feedback_gain @ (self.F.get_current_state() - self.x_hat)  # control input
+        self.F.set_control(u_new)
+        return
+        
+    
     def update_lqe(self):
         Phi  = self.F.get_A_tilde()
         Sigma_tilde = self.F.aug_process_noise_covar()
@@ -172,9 +178,6 @@ class LQG_QKF:
         Pj = (I - K @ Btil) @ P_pred @ (I - K @ Btil).T \
             + K @ V @ K.T
 
-        # enforce exact symmetry
-        self.Pz_est = 0.5*(Pj + Pj.T)
-
         # keep the classical x̂ part handy for the LQR
         n = self.n
         self.x_hat = self.Z_est[:n, :]
@@ -187,9 +190,10 @@ class LQG_QKF:
     def run_sim(self):
         estimate_error_list = []
         for _ in tqdm.tqdm(range(1, self.H + 1, 1)):
+            # self.update_lqr_orig()
             self.update_lqr()
-            self.update_lqe()
             self.forward_state()
+            self.update_lqe()
             
             Z_est = self.Z_est
             x_est = Z_est[:self.n, :]
@@ -202,24 +206,25 @@ def main():
     p = 3
     m = 2
     
-    W = generate_random_symmetric_matrix(n, scale=1.0)
-    A = np.random.randn(n, n)
-    B = np.random.randn(n, p)
+    W = generate_random_symmetric_matrix(n, scale=1e-3)
+    A = np.random.randn(n, n) * 0.8
+    B = np.random.randn(n, p) * 0.5
     
     F = StateDynamics(n, p , W, A, B)
     C = np.random.randn(m, n)
     
     M = np.random.randn(m, n, n)
-    V = generate_random_symmetric_matrix(m, scale=1.0)
+    V = generate_random_symmetric_matrix(m, scale=1e-2)
     S = sensor(C, M, V)
     
     # Q, R must be symmetric positive definite matrices
     Q = generate_random_symmetric_matrix(n+n**2, scale=1.0)
+    # Q = generate_random_symmetric_matrix(n, scale=1.0)
     R = generate_random_symmetric_matrix(p, scale=1.0)
-    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=50)
+    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=1000)
     
     err_list = lqg_qkf_sys.run_sim()
-    print("Estimate error list: ", err_list)
+    # print("Estimate error list: ", err_list)
     plt.plot(err_list, label='Estimate error')
     plt.legend()
     plt.title('Estimate error')

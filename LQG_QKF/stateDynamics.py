@@ -233,9 +233,8 @@ class sensor(object):
     return term1 + term2 + self.v # shape (m,1)
   
   def aug_measure(self, z):
-    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V)
+    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1, 1)
     term1 = self.get_measA() # shape (m,1)
     term2 = self.get_aug_measB() @ z # shape (m,1)
     term3 = self.v # shape (m,1)
-    
     return term1 + term2 + term3 # shape (m,1)
