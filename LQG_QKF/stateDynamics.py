@@ -219,17 +219,11 @@ class sensor(object):
     self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1, 1) # measurement noise vector, shape (m,1)
     
     term1 = self.C @ x
-    
-    # x has shape (n, 1);  squeeze → (n,)
-    x_vec = x.ravel()                       # (n,)
 
     # self.M has shape (m, n, n)
-    # Compute q_i = xᵀ M[i] x  for all i = 0…m‑1 in one call:
-    term2 = np.einsum('i, aij, j -> a',    # a ≡ output index (0…m‑1)
-                      x_vec,               # i  ≡ first state index
-                      self.M,              # a,i,j
-                      x_vec)[:, None]      # j  ≡ second state index
-                                          # result: (m,) → reshape to (m,1)
+    term2 = np.zeros((self.m, 1)) # shape (m,1)
+    for i in range(self.m):
+        term2[i] = (x.T @ self.M[i] @ x).item() # shape (1,1) 
     return term1 + term2 + self.v # shape (m,1)
   
   def aug_measure(self, z):
