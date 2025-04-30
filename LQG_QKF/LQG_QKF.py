@@ -248,21 +248,23 @@ def main():
     A = np.random.randn(n, n) * 0.8 * 1e-2
     B = np.random.randn(n, p) * 0.5 * 1e-2
     
-    F = StateDynamics(n, p , W, A, B)
+    
     C = np.random.randn(m, n)
     
     M = np.random.randn(m, n, n) * 1e-2
     V = generate_random_symmetric_matrix(m, scale=1e-2)
-    S = sensor(C, M, V)
     
     # Q, R must be symmetric positive definite matrices
     Q = generate_random_symmetric_matrix(n+n**2, scale=1.0)
     # Q = generate_random_symmetric_matrix(n, scale=1.0)
     R = generate_random_symmetric_matrix(p, scale=1.0)
-    lqg_ekf_sys = LQG_QKF(F, S, Q, R, H=1000)
+    F1 = StateDynamics(n, p , W, A, B)
+    S1 = sensor(C, M, V)
+    lqg_ekf_sys = LQG_QKF(F1, S1, Q, R, H=1000)
     err_list_ekf = lqg_ekf_sys.run_sim_ekf()
-    
-    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=1000)
+    F2 = StateDynamics(n, p , W, A, B)
+    S2 = sensor(C, M, V)
+    lqg_qkf_sys = LQG_QKF(F2, S2, Q, R, H=1000)
     err_list_qkf = lqg_qkf_sys.run_sim_qkf()
     # print("Estimate error list: ", err_list)
     plt.plot(err_list_ekf, label=f'ekf measure error')
