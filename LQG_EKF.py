@@ -203,7 +203,7 @@ if __name__ == "__main__":
     C = np.random.randn(m, n1 + n2) * 0.1
     M = []
     for i in range(m):
-        M.append(np.random.randn(n1 + n2, n1 + n2) * 1e-3)
+        M.append(np.random.randn(n1 + n2, n1 + n2) * 1)
     M = np.array(M)  # Convert list of matrices to a 3D numpy array
 
     # Cost matrices (should be positive definite)

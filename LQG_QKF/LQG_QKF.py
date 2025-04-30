@@ -54,9 +54,7 @@ def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
     P = Qf.copy()
     # backward recursion
     for k in reversed(range(N)):
-        G    = R + B.T @ P @ B
-        Kk   = np.linalg.solve(G, B.T @ P @ A)
-        P    = Q + A.T @ P @ (A - B @ Kk)
+        P = Q + A.T @ P @ A - A.T @ P @ B @ np.linalg.pinv(R + B.T @ P @ B) @ B.T @ P @ A
     return P
 
 class LQG_QKF:
@@ -93,6 +91,9 @@ class LQG_QKF:
         # lqr
         self.Q = Q.astype(np.float64)
         self.R = R.astype(np.float64)
+        
+        # lqe
+        self.P_est = np.eye(self.n) * small_value  # estimation error covariance matrix 
     
     def update_lqr(self, infinite_horizon = False):
         goal_state = self.F.get_current_state() # shape (n,1)
@@ -136,32 +137,32 @@ class LQG_QKF:
         self.F.set_control(u_new) # update control input vector
         return 
     
-    def update_lqr_orig(self):
+    def update_lqr_ekf(self):
         # LQR update only with original state, no augmented state
-        P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q, self.R)  # P is the fixed-point
+        P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q[:self.n, :self.n], self.R)  # P is the fixed-point
         feedback_gain = -np.linalg.pinv(self.R + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
         u_new = feedback_gain @ (self.F.get_current_state() - self.x_hat)  # control input
         self.F.set_control(u_new)
         return
         
     
-    def update_lqe(self):
+    def update_lqe_qkf(self):
         Phi  = self.F.get_A_tilde()
         Sigma_tilde = self.F.aug_process_noise_covar()
         mu_tilde = self.F.mu_tilde()
-    
+        
         # state prediction     Z_{t|t‑1} ,  P⁽ᶻ⁾_{t|t‑1}
         Z_pred = Phi @ self.Z_est + mu_tilde
-        P_pred = Phi @ self.Pz_est @ Phi.T + Sigma_tilde
+        Pz_pred = Phi @ self.Pz_est @ Phi.T + Sigma_tilde
 
         # measurement prediction Y_{t|t‑1} , innovation cov  M
         measA = self.sensor.get_measA() # shape (m, 1)
         measB_tilde = self.sensor.get_aug_measB() # shape (m, n+n^2)
         Y_pred = measA + measB_tilde @ Z_pred # shape (m, n+n^2)
-        measM = self.sensor.get_aug_measB() @ P_pred @ self.sensor.get_aug_measB().T + self.V
+        estM = self.sensor.get_aug_measB() @ Pz_pred @ measB_tilde.T + self.V
 
         # Kalman gain          Kₜ
-        K = P_pred @ self.sensor.get_aug_measB().T @ np.linalg.inv(measM)
+        K = Pz_pred @ self.sensor.get_aug_measB().T @ np.linalg.inv(estM)
 
         # state update         Z_{t|t} ,  P⁽ᶻ⁾_{t|t}
         z, _, _ = self.F.aug_state()
@@ -169,36 +170,73 @@ class LQG_QKF:
         innovation = Y_meas - Y_pred
         self.Z_est = Z_pred + K @ innovation
         
-        # Joseph form of the covariance update 
-        I = np.eye(P_pred.shape[0])
-        Btil = measB_tilde      # your sensor.get_aug_measB()
-        V    = self.V
-
-        # Joseph‑form update
-        Pj = (I - K @ Btil) @ P_pred @ (I - K @ Btil).T \
-            + K @ V @ K.T
-
+        Pz_1 = Pz_pred - K @ estM @ K.T
+        self.Pz_est = Pz_1
         # keep the classical x̂ part handy for the LQR
         n = self.n
         self.x_hat = self.Z_est[:n, :]
-
         return 
+    
+    def update_lqe_ekf(self):
+        # Jacobian of the measurement function
+        m = self.sensor.C.shape[0]
+        temp_term = [None] * m
+        for i in range(m):
+            temp_term[i] = 2 * self.sensor.M[i] @ self.F.get_current_state()
+        temp_term = np.array(temp_term)
+        C_tilde = self.sensor.C + temp_term.squeeze()
+        
+        # priori estimate 
+        x_hat_pri = self.A @ self.x_hat + self.B @ self.F.get_current_control()   
+        
+        # P_k-1
+        p0 = self.A @ self.P_est @ self.A.T + self.W
+        
+        # kalman gain
+            # K = P- @ C^T @ inv(C @ P- @ C^T + V)
+        kalman_gain =(p0 @ C_tilde.T @ np.linalg.pinv(C_tilde @ p0 @ C_tilde.T + self.V))
+        self.kalman_gain = (kalman_gain)
+        
+        # measurement
+        z = self.sensor.measure(self.F.get_current_state())
+        
+        # innovation
+        innov = z - self.sensor.measure_pred(x_hat_pri)
+        
+        # posterior estimate
+        x_hat_post = x_hat_pri + kalman_gain @ innov
+        self.x_hat = (x_hat_post)
+        
+        # P_k - Propagation of the estimation error covariance matrix
+        p1 = (np.eye(self.n) - kalman_gain @ C_tilde) @ p0
+        self.P_est = (p1)
+        return
+    
     
     def forward_state(self):
         self.F.forward()
         
-    def run_sim(self):
+    def run_sim_qkf(self):
         estimate_error_list = []
         for _ in tqdm.tqdm(range(1, self.H + 1, 1)):
             # self.update_lqr_orig()
             self.update_lqr()
             self.forward_state()
-            self.update_lqe()
+            self.update_lqe_qkf()
             
-            Z_est = self.Z_est
-            x_est = Z_est[:self.n, :]
-            err = np.linalg.norm(self.F.get_current_state() - x_est)
-            estimate_error_list.append(err)
+            # print('u:', self.F.get_current_control())
+            estimate_error_list.append(np.trace(self.Pz_est[:self.n, :self.n]))
+        return estimate_error_list
+    
+    def run_sim_ekf(self):
+        estimate_error_list = []
+        for _ in tqdm.tqdm(range(1, self.H + 1, 1)):
+            # self.update_lqr_orig()
+            self.update_lqr_ekf()
+            self.forward_state()
+            self.update_lqe_ekf()
+            
+            estimate_error_list.append(np.trace(self.P_est))
         return estimate_error_list
 
 def main():
@@ -206,14 +244,14 @@ def main():
     p = 3
     m = 2
     
-    W = generate_random_symmetric_matrix(n, scale=1e-3)
-    A = np.random.randn(n, n) * 0.8
-    B = np.random.randn(n, p) * 0.5
+    W = generate_random_symmetric_matrix(n, scale=1e-2)
+    A = np.random.randn(n, n) * 0.8 * 1e-2
+    B = np.random.randn(n, p) * 0.5 * 1e-2
     
     F = StateDynamics(n, p , W, A, B)
     C = np.random.randn(m, n)
     
-    M = np.random.randn(m, n, n)
+    M = np.random.randn(m, n, n) * 1e-2
     V = generate_random_symmetric_matrix(m, scale=1e-2)
     S = sensor(C, M, V)
     
@@ -221,16 +259,20 @@ def main():
     Q = generate_random_symmetric_matrix(n+n**2, scale=1.0)
     # Q = generate_random_symmetric_matrix(n, scale=1.0)
     R = generate_random_symmetric_matrix(p, scale=1.0)
-    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=1000)
+    lqg_ekf_sys = LQG_QKF(F, S, Q, R, H=1000)
+    err_list_ekf = lqg_ekf_sys.run_sim_ekf()
     
-    err_list = lqg_qkf_sys.run_sim()
+    lqg_qkf_sys = LQG_QKF(F, S, Q, R, H=1000)
+    err_list_qkf = lqg_qkf_sys.run_sim_qkf()
     # print("Estimate error list: ", err_list)
-    plt.plot(err_list, label='Estimate error')
+    plt.plot(err_list_ekf, label=f'ekf measure error')
+    plt.plot(err_list_qkf, label=f'qkf measure error')
     plt.legend()
     plt.title('Estimate error')
     plt.xlabel('Time step')
     plt.ylabel('Estimate error')
     plt.grid()
+    plt.savefig('LQG_QKF/qkf_vs_ekf.png')
     plt.show()
     return
 

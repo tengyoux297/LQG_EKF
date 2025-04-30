@@ -223,8 +223,21 @@ class sensor(object):
     # self.M has shape (m, n, n)
     term2 = np.zeros((self.m, 1)) # shape (m,1)
     for i in range(self.m):
-        term2[i] = (x.T @ self.M[i] @ x).item() # shape (1,1) 
+        e = np.zeros((self.m, 1)) # shape (m,1)
+        e[i] = 1
+        term2 += e @ x.T @ self.M[i] @ x
     return term1 + term2 + self.v # shape (m,1)
+  
+  def measure_pred(self, x_pred):
+    term1 = self.C @ x_pred
+
+    # self.M has shape (m, n, n)
+    term2 = np.zeros((self.m, 1)) # shape (m,1)
+    for i in range(self.m):
+        e = np.zeros((self.m, 1)) # shape (m,1)
+        e[i] = 1
+        term2 += e @ x_pred.T @ self.M[i] @ x_pred  
+    return term1 + term2 # shape (m,1)
   
   def aug_measure(self, z):
     self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1, 1)
