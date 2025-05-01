@@ -134,6 +134,8 @@ class StateDynamics(object):
     Sigma_tilde[:n, n:] = Sigma12
     Sigma_tilde[n:, :n] = Sigma21
     Sigma_tilde[n:, n:] = Sigma22
+    # scale_z2 = 0.01      # try 0.01 … 0.0001
+    # Sigma_tilde[n:, n:] *= scale_z2
     return Sigma_tilde.astype(np.float64) # shape (n+n^2,n+n^2)
   
   def get_A_tilde(self):
@@ -154,17 +156,33 @@ class StateDynamics(object):
     A_tilde[n:, n:] = A22
     return A_tilde.astype(np.float64) # shape (n+n^2,n+n^2)
 
-  def get_B_tilde(self): # B_tilde
-    B = self.B # shape (n,p)
-    u = self.u # shape (p,1)
-    n, p = B.shape[0], B.shape[1] # state size, control input size
-    # top block
-    B_tilde_1 = B                        # (n, p)
-    kron_sum = (np.kron(u, np.eye(p)) + np.kron(np.eye(p), u))        # shape (p^2, p)
-    # B ⊗ B: shape (n^2, p^2)
-    B_tilde_2 = np.kron(B,B) @ kron_sum                             # (n^2, p)
-    B_tilde = np.vstack([B_tilde_1, B_tilde_2]) # (n+n^2, p)
-    return B_tilde.astype(np.float64) # shape (n+n^2,p)
+  def get_B_tilde(self):
+      """
+      Return B_tilde = [ B ;
+                        (μ⊗I + I⊗μ) B ]
+      where μ = B u.
+      """
+      B  = self.B                               # (n, p)
+      μ  = B @ self.u                           # (n, 1)
+      n, p = self.n, self.p
+
+      B1 = B                                    # (n, p)
+      kron_sum = (np.kron(μ, np.eye(n)) +       # (n², n)
+                  np.kron(np.eye(n), μ))        # (n², n)
+      B2 = kron_sum @ B                         # (n², p)
+
+      return np.vstack((B1, B2)).astype(np.float64)   # (n + n², p)
+  
+  # def get_B_tilde(self): # B_tilde
+  #   B = self.B # shape (n,p)
+  #   u = self.u # shape (p,1)
+  #   n, p = B.shape[0], B.shape[1] # state size, control input size
+  #   # top block
+  #   B_tilde_1 = B                        # (n, p)
+  #   kron_sum = np.kron(u, np.eye(p)) + np.kron(np.eye(p), u)   # (p², p)
+  #   B_tilde_2 = np.kron(B,B) @ kron_sum                             # (n^2, p)
+  #   B_tilde = np.vstack([B_tilde_1, B_tilde_2]) # (n+n^2, p)
+  #   return B_tilde.astype(np.float64) # shape (n+n^2,p)
 
 class sensor(object):
   def __init__(self, C, M, V):
@@ -213,31 +231,16 @@ class sensor(object):
     return C_tilde    
   
   def measure(self, x):
-    '''
-    measure the state vector x
-    '''
-    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1, 1) # measurement noise vector, shape (m,1)
-    
-    term1 = self.C @ x
+    self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1,1)
 
-    # self.M has shape (m, n, n)
-    term2 = np.zeros((self.m, 1)) # shape (m,1)
-    for i in range(self.m):
-        e = np.zeros((self.m, 1)) # shape (m,1)
-        e[i] = 1
-        term2 += e @ x.T @ self.M[i] @ x
-    return term1 + term2 + self.v # shape (m,1)
+    term1 = self.C @ x
+    term2 = np.array([x.T @ self.M[i] @ x for i in range(self.m)]).reshape(-1,1)
+    return term1 + term2 + self.v
   
   def measure_pred(self, x_pred):
     term1 = self.C @ x_pred
-
-    # self.M has shape (m, n, n)
-    term2 = np.zeros((self.m, 1)) # shape (m,1)
-    for i in range(self.m):
-        e = np.zeros((self.m, 1)) # shape (m,1)
-        e[i] = 1
-        term2 += e @ x_pred.T @ self.M[i] @ x_pred  
-    return term1 + term2 # shape (m,1)
+    term2 = np.array([x_pred.T @ self.M[i] @ x_pred for i in range(self.m)]).reshape(-1,1)
+    return term1 + term2
   
   def aug_measure(self, z):
     self.v = np.random.multivariate_normal(np.zeros(self.V.shape[0]), self.V).reshape(-1, 1)

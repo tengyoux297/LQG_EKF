@@ -186,8 +186,7 @@ class NewtonSolver(object):
             grad = self.F(u, params)
             Hessian = self.approx_hessian(u, self.F, params)
             # regularise
-            H_reg = Hessian + np.eye(self.p) * 1e-6 # regularisation term
-            H_reg = np.squeeze(Hessian)
+            H_reg = np.squeeze(Hessian) + np.eye(self.p) * 1e-6 # regularisation term
             H_reg = 0.5*(H_reg + H_reg.T)                 # force symmetry
             if not np.all(np.isfinite(H_reg)):        # NaN / Inf guard
                 print(H_reg)
