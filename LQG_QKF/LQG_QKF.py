@@ -76,9 +76,13 @@ class LQG:
         self.W = self.F.get_W()
         
         # augmented state settings
-        z0, _, _  = self.F.aug_state()       # 0 if x0 = 0
-        self.Z_est = z0.astype(np.float64)
-        self.Pz_est = np.eye(self.n + self.n**2) * small_value # estimation error covariance matrix
+        mu_tilde_u = (np.eye(n+n**2) - self.F.get_A_tilde()).T @ self.F.mu_tilde() # shape (n+n^2, 1)
+        self.Z_est = mu_tilde_u # initialize estimated augmented state vector
+        I = np.eye(n**2 * (n+1)**2) # shape (n^2(n+1)^2, n^2(n+1)^2)
+        Phi_tilde = self.F.get_A_tilde() # shape (n+n^2, n+n^2)
+        Sigma_tilde = self.F.aug_process_noise_covar() # shape (n+n^2, n+n^2)
+        vec_sigma_tilde_u = (I - np.kron(Phi_tilde, Phi_tilde)) @ Vec(Sigma_tilde) # shape (n^2(n+1)^2, 1)
+        self.Pz_est = invVec(vec_sigma_tilde_u) # estimation error covariance matrix
         
         # horizon
         self.H = H
@@ -139,88 +143,78 @@ class LQG:
         self.F.set_control(u_new) # update control input vector
         return 
     
-    
+    def update_lqr_orig(self, goal_state):
+        # LQR update only with original state, no augmented state
+        P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q[:self.n, :self.n], self.R)  # P is the fixed-point
+        feedback_gain = -np.linalg.pinv(self.R + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
+        u_new = feedback_gain @ (goal_state - self.x_hat)  # control input
+        self.F.set_control(u_new)
+        return
+        
     def update_lqr(self):
         goal_state = self.get_goal_state()
         if self.filter_type == 'ekf' or self.filter_type == 'kf':
-            # LQR update only with original state, no augmented state
-            P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q[:self.n, :self.n], self.R)  # P is the fixed-point
-            feedback_gain = -np.linalg.pinv(self.R + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
-            u_new = feedback_gain @ (goal_state - self.x_hat)  # control input
-            self.F.set_control(u_new)
-            return
+            self.update_lqr_orig(goal_state)
         elif self.filter_type == 'qkf':
-            self.update_lqr_qkf(goal_state, True)
+            self.update_lqr_orig(goal_state)
+            # self.update_lqr_qkf(goal_state, True)
         else:
             raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
         return
         
     
     def update_lqe_qkf(self):
-        Phi  = self.F.get_A_tilde()
+        Phi_tilde  = self.F.get_A_tilde()
         Sigma_tilde = self.F.aug_process_noise_covar()
         mu_tilde = self.F.mu_tilde()
         
         # state prediction     Z_{t|t‑1} ,  P⁽ᶻ⁾_{t|t‑1}
-        Z_pred = Phi @ self.Z_est + mu_tilde
-        Pz_pred = Phi @ self.Pz_est @ Phi.T + Sigma_tilde
+        Z_pred = Phi_tilde @ self.Z_est + mu_tilde
+        Pz_pred = Phi_tilde @ self.Pz_est @ Phi_tilde.T + Sigma_tilde
 
         # measurement prediction Y_{t|t‑1} , innovation cov  M
         measA = self.sensor.get_measA() # shape (m, 1)
         measB_tilde = self.sensor.get_aug_measB() # shape (m, n+n^2)
         Y_pred = measA + measB_tilde @ Z_pred # shape (m, n+n^2)
-        estM = measB_tilde @ Pz_pred @ measB_tilde.T + self.V
+        M = measB_tilde @ Pz_pred @ measB_tilde.T + self.V
 
         # Kalman gain          Kₜ
-        K = Pz_pred @ measB_tilde.T @ np.linalg.inv(estM)
+        K = Pz_pred @ measB_tilde.T @ np.linalg.inv(M)
 
         # state update         Z_{t|t} ,  P⁽ᶻ⁾_{t|t}
-        z, _, _ = self.F.aug_state()
-        Y_meas = self.sensor.aug_measure(z)
+        Z, _, _ = self.F.aug_state()
+        Y_meas = self.sensor.aug_measure(Z)
         innovation = Y_meas - Y_pred
         self.Z_est = Z_pred + K @ innovation
+        Pz_1 = Pz_pred - K @ M @ K.T
         
-        Pz_1 = Pz_pred - K @ estM @ K.T
         self.Pz_est = Pz_1
-        # keep the classical x̂ part handy for the LQR
-        n = self.n
-        self.x_hat = self.Z_est[:n, :]
+        self.x_hat = self.Z_est[:self.n, :]
         return K
     
     def update_lqe_ekf(self):
-        # Jacobian of the measurement function
-        m = self.sensor.C.shape[0]
-        temp_term = [None] * m
-        for i in range(m):
-            temp_term[i] = 2 * self.sensor.M[i] @ self.F.get_current_state()
-        temp_term = np.array(temp_term)
-        C_tilde = self.sensor.C + temp_term.squeeze()
+        mu = self.F.B @ self.F.u
+        Phi = self.F.A
+        Sigma = self.F.W
         
-        # priori estimate 
-        x_hat_pri = self.A @ self.x_hat + self.B @ self.F.get_current_control()   
+        # state prediction
+        X_pred = mu + Phi @ self.x_hat
+        P_pred = Phi @ self.P_est @ Phi.T + Sigma
         
-        # P_k-1
-        p0 = self.A @ self.P_est @ self.A.T + self.W
+        # measurement prediction
+        Y_pred = self.sensor.measure_pred(X_pred)
+        g = self.sensor.g(X_pred)
+        M = g @ P_pred @ g.T + self.sensor.V
         
-        # kalman gain
-            # K = P- @ C^T @ inv(C @ P- @ C^T + V)
-        kalman_gain =(p0 @ C_tilde.T @ np.linalg.pinv(C_tilde @ p0 @ C_tilde.T + self.V))
-        self.kalman_gain = (kalman_gain)
+        # gain
+        K = P_pred @ g.T @ np.linalg.inv(M)
         
-        # measurement
-        y = self.sensor.measure(self.F.get_current_state())
-        
-        # innovation
-        innov = y - self.sensor.measure_pred(x_hat_pri)
-        
-        # posterior estimate
-        x_hat_post = x_hat_pri + kalman_gain @ innov
-        self.x_hat = (x_hat_post)
-        
-        # P_k - Propagation of the estimation error covariance matrix
-        p1 = (np.eye(self.n) - kalman_gain @ C_tilde) @ p0
-        self.P_est = (p1)
-        return kalman_gain
+        # state update
+        Y_meas = self.sensor.measure(self.F.get_current_state())
+        innov = Y_meas - Y_pred
+        self.x_hat = X_pred + K @ innov
+        self.P_est = P_pred - K @ M @ K.T
+        return K
     
     def update_lqe_kf(self):
         C = self.sensor.C
@@ -246,8 +240,7 @@ class LQG:
         self.x_hat = (x_hat_post)
         
         # P_k - Propagation of the estimation error covariance matrix
-        p1 = (np.eye(self.n) - kalman_gain @ C) @ p0
-        self.P_est = (p1)
+        self.P_est = (np.eye(self.n) - kalman_gain @ C) @ p0
         return kalman_gain
     
     def update_lqe(self):
@@ -260,9 +253,7 @@ class LQG:
         else:
             raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
         t = self.F.t
-        if t % 100 == 0:
-            print(f't={t:4d}',
-                f'‖K_{self.filter_type}‖₂=', np.linalg.norm(K),)
+        # print(f'  t={t:4d}', f'‖K_{self.filter_type}‖₂=', np.linalg.norm(K),) if t % 100 == 0 else None
         return
 
     
@@ -293,19 +284,19 @@ def main():
     p = 3
     m = 2
     
-    W = generate_random_symmetric_matrix(n, scale=1e-2)
-    A = np.random.randn(n, n) * 0.8 * 1e-2
-    B = np.random.randn(n, p) * 0.5 * 1e-2
+    W = generate_random_symmetric_matrix(n, scale=1e-1)
+    A = np.random.randn(n, n) * 1e-1 
+    B = np.random.randn(n, p) * 1e-1
     
     
     C = np.random.randn(m, n)
     
     M = []
     for i in range(m):
-        M.append(generate_random_symmetric_matrix(n, scale=1e1))
+        M.append(generate_random_symmetric_matrix(n, scale=1e2))
     M = np.array(M)
     
-    V = generate_random_symmetric_matrix(m, scale=1e-2)
+    V = generate_random_symmetric_matrix(m, scale=1e-1)
     
     # Q, R must be symmetric positive definite matrices
     Q = generate_random_symmetric_matrix(n+n**2, scale=1.0)
