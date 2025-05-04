@@ -24,11 +24,15 @@ def invVec(X):
   
 class StateDynamics(object):
   
-  def __init__(self, n, p, W, A, B):
+  def __init__(self, n1, n2, p, W, A_E, A_S, B_S):
     """
     Initializes the class
     """
-    self.x = np.zeros((n,1)) # state vector
+    self.x_E = np.zeros((n1,1)) # earth vector
+    self.x_S = np.zeros((n2,1)) # sensor vector
+    
+    n = n1 + n2 # state size
+    self.x = np.vstack((self.x_E, self.x_S)) # state vector
     self.u = np.zeros((p,1)) # control input vector
     
     assert W.shape[0] == n, "W must be a square matrix of size n x n"
@@ -36,8 +40,14 @@ class StateDynamics(object):
     self.W = W # covariance matrix for process noise w
     self.n = n # state size
     self.p = p # control input size
-    self.A = A.astype(np.float64) # state transition matrix
-    self.B = B.astype(np.float64) # control input matrix
+    
+    self.A = np.zeros((n,n)) # state transition matrix
+    self.A[:n1, :n1] = A_E
+    self.A[n1:, n1:] = A_S
+    
+    
+    self.B = np.zeros((n,p)) # control input matrix
+    self.B[n1:, :p] = B_S # shape (n2,p)  
     self.t = 0 # time step
     self.trajectory = [] # trajectory of the system
     self.trajectory.append([self.x, self.u]) # append initial state and control input to trajectory

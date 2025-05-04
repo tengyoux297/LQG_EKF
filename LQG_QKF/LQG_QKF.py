@@ -58,11 +58,13 @@ def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
     return P
 
 class LQG:
-    def __init__(self, n, p, W, A, B, C, M, V, Q, R, H = 50, filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf'):
+    def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H = 50, filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf'):
+        
         self.filter_type = filter_type
         
         # dynamics setting
-        self.F = StateDynamics(n, p , W, A, B)
+        self.F = StateDynamics(n1, n2, p , W, A_E, A_S, B_S)
+        n = n1 + n2 # state size
         
         # sensor settings
         self.sensor = sensor(C, M, V)
@@ -74,7 +76,6 @@ class LQG:
         self.n = self.F.get_state_size()
         self.p = self.F.get_input_size()
         self.W = self.F.get_W()
-        
         # augmented state settings
         mu_tilde_u = (np.eye(n+n**2) - self.F.get_A_tilde()).T @ self.F.mu_tilde() # shape (n+n^2, 1)
         self.Z_est = mu_tilde_u # initialize estimated augmented state vector
@@ -156,8 +157,8 @@ class LQG:
         if self.filter_type == 'ekf' or self.filter_type == 'kf':
             self.update_lqr_orig(goal_state)
         elif self.filter_type == 'qkf':
-            self.update_lqr_orig(goal_state)
-            # self.update_lqr_qkf(goal_state, True)
+            # self.update_lqr_orig(goal_state)
+            self.update_lqr_qkf(goal_state, False)
         else:
             raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
         return
@@ -269,25 +270,30 @@ class LQG:
             self.forward_state()
             self.update_lqe()
             
+            # record error
             estimate_error = np.linalg.norm(self.F.get_current_state() - self.x_hat).item()
             mse_list.append(estimate_error)
             
+            # record variance
             if self.filter_type == 'qkf':
                 var = np.trace(self.Pz_est[:self.n, :self.n])
             elif self.filter_type == 'ekf' or self.filter_type == 'kf':
                 var = np.trace(self.P_est)
             var_list.append(var)
+            
         return mse_list, var_list
 
 def main():
-    n = 4
+    n1 = 2
+    n2 = 2
+    n = n1 + n2 # state size
     p = 3
     m = 2
     
     W = generate_random_symmetric_matrix(n, scale=1e-1)
-    A = np.random.randn(n, n) * 1e-1 
-    B = np.random.randn(n, p) * 1e-1
-    
+    A_E = np.random.randn(n1, n1) * 1e-1 # state transition matrix for external state
+    A_S = np.random.randn(n2, n2) * 1e-1 # state transition matrix for internal state
+    B_S = np.random.randn(n2, p) * 1e-1 # control input matrix for internal state
     
     C = np.random.randn(m, n)
     
@@ -315,11 +321,11 @@ def main():
     ax[1].set_xlabel('Time step')   
     ax[1].set_ylabel('Estimate error covariance')
     
-    lqg_ekf_sys = LQG(n, p, W, A, B, C, M, V, Q, R, H=1000, filter_type='ekf')
+    lqg_ekf_sys = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=1000, filter_type='ekf')
     err_list_ekf, var_list_ekf = lqg_ekf_sys.run_sim()
     ax[0].plot(err_list_ekf, label=f'ekf error')
     ax[1].plot(var_list_ekf, label=f'ekf var')
-    lqg_qkf_sys = LQG(n, p, W, A, B, C, M, V, Q, R, H=1000, filter_type='qkf')
+    lqg_qkf_sys = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=1000, filter_type='qkf')
     err_list_qkf, var_list_qkf = lqg_qkf_sys.run_sim()
     ax[0].plot(err_list_qkf, label=f'qkf error')
     ax[1].plot(var_list_qkf, label=f'qkf var')
