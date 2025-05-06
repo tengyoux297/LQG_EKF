@@ -162,6 +162,7 @@ class StateDynamics(object):
     Sigma_tilde[:n, n:] = Sigma12
     Sigma_tilde[n:, :n] = Sigma21
     Sigma_tilde[n:, n:] = Sigma22
+    # print(f'sum sigma11: {np.sum(Sigma11)}, sum sigma12: {np.sum(Sigma12)}, sum sigma21: {np.sum(Sigma21)}, sum sigma22: {np.sum(Sigma22)}')
     return Sigma_tilde # shape (n+n^2,n+n^2)
   
   def get_A_tilde(self):
