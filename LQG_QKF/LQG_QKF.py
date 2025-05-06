@@ -58,10 +58,11 @@ def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
     return P
 
 class LQG:
-    def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H = 50, filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf'):
+    def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H = 50, filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf',
+                 lqr_type: Literal['orig', 'aug'] = 'orig'):
         
         self.filter_type = filter_type
-        
+        self.lqr_type = lqr_type
         # dynamics setting
         self.F = StateDynamics(n1, n2, p , W, A_E, A_S, B_S)
         n = n1 + n2 # state size
@@ -99,11 +100,13 @@ class LQG:
         # lqe
         self.P_est = np.eye(self.n) * small_value  # estimation error covariance matrix 
     
-    def get_goal_state(self):   
-        goal_state = np.random.randn(self.n, 1)
+    def get_goal_state(self): 
+        goal_state_E = current x_E  
+        goal_state_S = np.random.randn(self.n2, 1)
+        goal_state = np.vstack((goal_state_E, goal_state_S))
         return goal_state
     
-    def update_lqr_qkf(self, goal_state, infinite_horizon = False):
+    def update_lqr_aug(self, goal_state, infinite_horizon = False):
         z_0 = (np.concatenate([goal_state.T, Vec(goal_state @ goal_state.T).T], axis=1)).T
         z_1, z1_1, z2_1 = self.F.aug_state()
         z = z_1 - z_0
@@ -157,8 +160,10 @@ class LQG:
         if self.filter_type == 'ekf' or self.filter_type == 'kf':
             self.update_lqr_orig(goal_state)
         elif self.filter_type == 'qkf':
-            # self.update_lqr_orig(goal_state)
-            self.update_lqr_qkf(goal_state, False)
+            if self.lqr_type == 'aug':
+                self.update_lqr_aug(goal_state, infinite_horizon=False)
+            elif self.lqr_type == 'orig':
+                self.update_lqr_orig(goal_state)
         else:
             raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
         return
@@ -167,6 +172,7 @@ class LQG:
     def update_lqe_qkf(self):
         Phi_tilde  = self.F.get_A_tilde()
         Sigma_tilde = self.F.aug_process_noise_covar()
+        # print('sigma_tilde', Sigma_tilde)   
         mu_tilde = self.F.mu_tilde()
         
         # state prediction     Z_{t|t‑1} ,  P⁽ᶻ⁾_{t|t‑1}
@@ -321,14 +327,14 @@ def main():
     ax[1].set_xlabel('Time step')   
     ax[1].set_ylabel('Estimate error covariance')
     
-    lqg_ekf_sys = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=1000, filter_type='ekf')
-    err_list_ekf, var_list_ekf = lqg_ekf_sys.run_sim()
-    ax[0].plot(err_list_ekf, label=f'ekf error')
-    ax[1].plot(var_list_ekf, label=f'ekf var')
-    lqg_qkf_sys = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=1000, filter_type='qkf')
-    err_list_qkf, var_list_qkf = lqg_qkf_sys.run_sim()
-    ax[0].plot(err_list_qkf, label=f'qkf error')
-    ax[1].plot(var_list_qkf, label=f'qkf var')
+    lqg_qkf_aug = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=1000, filter_type='qkf', lqr_type='aug')
+    err_list_ekf, var_list_ekf = lqg_qkf_aug.run_sim()
+    ax[0].plot(err_list_ekf, label=f'aug_lqr err')
+    ax[1].plot(var_list_ekf, label=f'aug_lqr var') 
+    lqg_qkf_sys = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=1000, filter_type='qkf', lqr_type='orig')
+    err_list_orig, var_list_qkf = lqg_qkf_sys.run_sim()
+    ax[0].plot(err_list_orig, label=f'orig_lqr err')
+    ax[1].plot(var_list_qkf, label=f'orig_lqr var')
     
     ax[0].legend()
     ax[0].grid()
