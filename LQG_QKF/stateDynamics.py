@@ -32,13 +32,15 @@ class StateDynamics(object):
     self.x_S = np.zeros((n2,1)) # sensor vector
     
     n = n1 + n2 # state size
+    self.n1 = n1 # earth state size
+    self.n2 = n2 # sensor state size
+    self.n = n # state size
     self.x = np.vstack((self.x_E, self.x_S)) # state vector
     self.u = np.zeros((p,1)) # control input vector
     
     assert W.shape[0] == n, "W must be a square matrix of size n x n"
     assert W.shape[1] == n, "W must be a square matrix of size n x n"
     self.W = W # covariance matrix for process noise w
-    self.n = n # state size
     self.p = p # control input size
     
     self.A = np.zeros((n,n)) # state transition matrix
@@ -51,6 +53,12 @@ class StateDynamics(object):
     self.t = 0 # time step
     self.trajectory = [] # trajectory of the system
     self.trajectory.append([self.x, self.u]) # append initial state and control input to trajectory
+  
+  def get_earth_state_size(self): 
+    return self.n1
+  
+  def get_sensor_state_size(self):
+    return self.n2
   
   def get_state_size(self):
     return self.n
@@ -76,19 +84,31 @@ class StateDynamics(object):
     '''
     return self.B
   
-  def get_current_state(self):
+  def get_x_E(self):
+    '''
+    current earth state vector
+    '''
+    return self.x_E
+  
+  def get_x_S(self):
+    '''
+    current sensor state vector
+    '''
+    return self.x_S
+  
+  def get_x(self):
     '''
     current state vector
     '''
     return self.x 
   
-  def set_control(self, u):
+  def set_u(self, u):
     '''
     set control input vector
     '''
     self.u = u
   
-  def get_current_control(self):
+  def get_u(self):
     '''
     current control input vector
     '''
@@ -100,20 +120,30 @@ class StateDynamics(object):
     '''
     return self.trajectory
   
+  def get_w(self):
+    '''
+    process noise w
+    '''
+    omega = np.linalg.cholesky(self.W)
+    noise = omega @ np.random.randn(self.n, 1) # shape (n,1)
+    self.w = noise # store process noise
+    return noise
+  
   def forward(self):
     '''
     Forward kinematics of the system.
     '''
-    omega = np.linalg.cholesky(self.W) 
-    noise = omega @ np.random.randn(self.n, 1) # shape (n,1)
-    x1 = self.A @ self.x + self.B @ self.u + noise # shape (n,1)
+    w = self.get_w() # process noise w
+    x1 = self.A @ self.x + self.B @ self.u + w # shape (n,1)
     self.x = x1 # update state vector
+    self.x_E = x1[:self.n1] # update earth state vector
+    self.x_S = x1[self.n1:] # update sensor state vector
     self.t += 1
     self.trajectory.append([self.x, self.u]) # append current state and control input to trajectory
     return self.t
   
 # augmented system
-  def aug_state(self):
+  def get_z(self):
     '''
     get current augmented state vector
     '''
@@ -123,7 +153,7 @@ class StateDynamics(object):
     z = (np.concatenate([z1.T, z2.T], axis=1)).T # shape (n+n^2, 1)
     return z, z1, z2
   
-  def mu_tilde(self): # mu_tilde
+  def get_mu_tilde(self): # mu_tilde
     mu = self.B @ self.u # "mu" term, shape (n,1)
     Sigma = self.W # shape (n,n)
     term1 = mu # shape (n,1)
@@ -131,7 +161,7 @@ class StateDynamics(object):
     mu_tilde = np.vstack((term1, term2)) # shape (n+n^2, 1)
     return mu_tilde # shape (n+n^2, 1)
   
-  def aug_process_noise_covar(self):
+  def get_Sigma_tilde(self):
     n = self.n # state size
     Sigma = self.W # shape (n,n)
     I_n = np.eye(n) # shape (n,n)
@@ -196,7 +226,12 @@ class StateDynamics(object):
       term1 = B                                    # (n, p)
       term2 = np.kron(B, B) @ (np.kron(I_p, u) + np.kron(u, I_p)) # (n², p)
       return np.vstack((term1, term2), dtype=np.float64)   # (n + n², p)
-
+  
+  def get_w_tilde(self):
+    w_tilde = np.zeros((self.n + self.n**2, 1)) # shape (n+n^2,1)
+    w_tilde[:self.n] = self.w # shape (n,1)
+    return w_tilde # shape (n+n^2,1)
+  
 class sensor(object):
   def __init__(self, C, M, V):
     """
@@ -243,7 +278,7 @@ class sensor(object):
     # horizontal concatenation
     B_tilde = np.hstack((self.C, right_term)) # shape (m, n+n^2)
     # print (f'B_tilde shape: {B_tilde.shape}')
-    return B_tilde    
+    return B_tilde   
   
   def measure(self, x):
     '''
