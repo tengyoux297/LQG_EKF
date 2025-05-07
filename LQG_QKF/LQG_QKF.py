@@ -57,8 +57,21 @@ def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
         P = Q + A.T @ P @ A - A.T @ P @ B @ np.linalg.pinv(R + B.T @ P @ B) @ B.T @ P @ A
     return P
 
+def update_lqr_one_step(A, B, Q, R):
+    # Compute the LQR gain
+    K = -np.linalg.pinv(R + B.T @ P @ B) @ B.T @ P @ A
+    P = A.T @ P @ A - A.T @ P @ B @ K + Q + K.T @ R @ K  # update the cost-to-go matrix
+    
+    return K, P
+
+def generate_goal_state(goal_state_E, state_S_size): 
+        goal_state_S = np.random.randn(state_S_size, 1)
+        goal_state = np.vstack((goal_state_E, goal_state_S))
+        return goal_state
+
 class LQG:
-    def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H = 50, filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf',
+    def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, goal_state, H = 50, 
+                 filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf',
                  lqr_type: Literal['orig', 'aug'] = 'orig'):
         
         self.filter_type = filter_type
@@ -96,21 +109,16 @@ class LQG:
         self.x_hat = np.zeros((self.n, 1)) # estimated state vector
         self.z_hat = np.zeros((self.n + self.n**2, 1)) # estimated augmented state vector
         self.x_goal = np.zeros((self.n, 1)) # goal state vector
+        
         # lqr
+        self.x_goal = goal_state
         self.Q = Q.astype(np.float64)
         self.R = R.astype(np.float64)
         
         # lqe
         self.P_est = np.eye(self.n) * small_value  # estimation error covariance matrix 
     
-    def update_goal_state(self): 
-        goal_state_E = self.F.get_x_E() 
-        goal_state_S = np.random.randn(self.n2, 1)
-        goal_state = np.vstack((goal_state_E, goal_state_S))
-        self.x_goal = goal_state
-        return 
-    
-    def update_lqr_newton(self, goal_state, infinite_horizon = False):
+    def update_lqr_newton(self, goal_state):
         z_0 = (np.concatenate([goal_state.T, Vec(goal_state @ goal_state.T).T], axis=1)).T
         z_1 = self.Z_est
         z = z_1 - z_0
@@ -119,13 +127,8 @@ class LQG:
         A_tilde = self.F.get_A_tilde() # shape (n+n^2, n+n^2)
         B_tilde = self.F.get_B_tilde() # shape (n+n^2, p)
         
-        if infinite_horizon: # infinite horizon LQR -> DOES NOT WORK FOR THIS CASE!
-            check_stability(A_tilde, B_tilde, self.Q, self.R)
-            from scipy.linalg import solve_discrete_are
-            P = solve_discrete_are(A_tilde, B_tilde, self.Q, self.R)   # P is the fixed‑point
-        else: # finite horizon LQR
-            P = finite_horizon_lqr(A_tilde, B_tilde, self.Q, self.R, N=self.H, Qf=None)
-        
+        K, P = update_lqr_one_step(A_tilde, B_tilde, self.R, self.Q)
+        self.Pz_est = P # update cost-to-go matrix
         n = self.n # state size
         P11 = P[:n,     :n]
         P12 = P[:n,     n:]
@@ -194,7 +197,7 @@ class LQG:
             alpha *= 0.5                       # shrink step
         return u_nom, x_nom, 0.0               # no progress
     
-    def update_ilqr(self, goal_state, alpha = 1):
+    def update_ilqr(self, goal_state, alpha = 1, verbose=False):
         x_nominal = self.x_hat
         u_nominal = np.zeros((self.p, 1)) # nominal control input vector
          
@@ -248,7 +251,8 @@ class LQG:
             u_new, x_new, alpha = self.line_search(u_nominal, d, K, x_nominal, x_cur, goal_state, A, B)
             # check convergence
             diff = np.linalg.norm(u_new - u_nominal)
-            print(f"iter {iter:3d} | step α={alpha:.3f} | Δu={diff:.2e}")
+            if verbose:
+                print(f"iter {iter:3d} | step α={alpha:.3f} | Δu={diff:.2e}")
             
             if diff < epsilon:
                 break
@@ -259,10 +263,10 @@ class LQG:
         return
     
     
-    def update_lqr_orig(self, goal_state):
+    def update_lqr_orig(self, goal_state, ):
         # LQR update only with original state, no augmented state
         # P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q[:self.n, :self.n], self.R)  # P is the fixed-point
-        P_lqr = finite_horizon_lqr(self.A, self.B, self.Q[:self.n, :self.n], self.R, N=100, Qf=None)
+        P_lqr = finite_horizon_lqr(self.A, self.B, self.Q[:self.n, :self.n], self.R, N=1, Qf=None)
         feedback_gain = -np.linalg.pinv(self.R + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
         u_new = feedback_gain @ (goal_state - self.x_hat)  # control input
         self.F.set_u(u_new)
@@ -387,7 +391,6 @@ class LQG:
         cost_list = []
         for _ in tqdm.tqdm(range(1, self.H + 1, 1)):
             self.update_lqe()
-            self.update_goal_state()
             self.update_lqr()
             self.forward_state()
             
@@ -403,20 +406,31 @@ class LQG:
             var_list.append(var)
             
             # record cost   
-            x_goal = self.x_goal
-            z_goal = np.concatenate([
-                x_goal.reshape(-1, 1),
-                Vec(x_goal @ x_goal.T).reshape(-1, 1)
-            ], axis=0)
-            z_est = self.Z_est
-            u = self.F.get_u()
-            dz = z_est - z_goal
-            cost = dz.T @ self.Q @ dz + u.T @ self.R @ u
-            cost_list.append(cost.item())
+            if self.filter_type == 'qkf':
+                x_goal = self.x_goal
+                z_goal = np.concatenate([x_goal.reshape(-1, 1),Vec(x_goal @ x_goal.T).reshape(-1, 1)], axis=0)
+                z_est = self.Z_est
+                u = self.F.get_u()
+                dz = z_est - z_goal
+                cost = dz.T @ self.Q @ dz + u.T @ self.R @ u
+                cost_list.append(cost.item())
+            else:
+                x_goal = self.x_goal
+                x_est = self.x_hat
+                u = self.F.get_u()
+                dx = x_est - x_goal
+                cost = dx.T @ self.Q[:self.n, :self.n] @ dx + u.T @ self.R @ u
+                cost_list.append(cost.item())
             
-        return rmse_list, var_list, cost_list
+        cost_to_go_list = []
+        for i in range(len(cost_list)):
+            cost_to_go = np.sum(cost_list[i:])
+            cost_to_go_list.append(cost_to_go)  
+              
+        return rmse_list, var_list, cost_to_go_list
 
-def main():
+def main(H=1000):
+    
     n1 = 2
     n2 = 2
     n = n1 + n2 # state size
@@ -442,6 +456,7 @@ def main():
     # Q = generate_random_symmetric_matrix(n, scale=1.0)
     R = generate_random_symmetric_matrix(p, scale=1.0)
     
+    goal_state = generate_goal_state(np.zeros((n1, 1)), n2) # goal state vector
     # lqg_kf_sys = LQG(n, p, W, A, B, C, M, V, Q, R, H=1000, filter_type='kf')
     # err_list_kf = lqg_kf_sys.run_sim()
     # plt.plot(err_list_kf, label=f'kf measure error')
@@ -450,26 +465,26 @@ def main():
     ax[0].set_title('Estimate error')
     ax[0].set_xlabel('Time step')
     ax[0].set_ylabel('Estimate error')
-    ax[1].set_title('Estimate error covariance')
+    ax[1].set_title('Estimate variance')
     ax[1].set_xlabel('Time step')   
-    ax[1].set_ylabel('Estimate error covariance')
+    ax[1].set_ylabel('Estimate variance')
     ax[2].set_title('Cost')
     ax[2].set_xlabel('Time step')
     ax[2].set_ylabel('Cost')
 
-    lqg_qkf_orig = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=100, filter_type='qkf', lqr_type='orig')
+    lqg_qkf_orig = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='orig', goal_state=goal_state)
     err_list_orig, var_list_orig, cost_list_orig = lqg_qkf_orig.run_sim()
     ax[0].plot(err_list_orig, label=f'orig_lqr err')
     ax[1].plot(var_list_orig, label=f'orig_lqr var')
     ax[2].plot(cost_list_orig, label=f'orig_lqr cost')
     
-    lqg_qkf_aug = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=100, filter_type='qkf', lqr_type='aug')
+    lqg_qkf_aug = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='aug', goal_state=goal_state)
     err_list_aug, var_list_aug, cost_list_aug = lqg_qkf_aug.run_sim()
     ax[0].plot(err_list_aug, label=f'aug_lqr err')
     ax[1].plot(var_list_aug, label=f'aug_lqr var')
     ax[2].plot(cost_list_aug, label=f'aug_lqr cost')
     
-    lqg_ekf = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=100, filter_type='ekf', lqr_type='orig')
+    lqg_ekf = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='ekf', lqr_type='orig', goal_state=goal_state)
     err_list_ekf, var_list_ekf, cost_list_ekf = lqg_ekf.run_sim()
     ax[0].plot(err_list_ekf, label=f'ekf err')
     ax[1].plot(var_list_ekf, label=f'ekf var') 
@@ -481,6 +496,8 @@ def main():
     ax[1].grid()
     ax[2].legend()
     ax[2].grid()
+    # ax[2].set_xscale('log')
+    # ax[2].set_yscale('log')
     # print("Estimate error list: ", err_list)
     plt.tight_layout()
     plt.savefig('LQG_QKF/perf_comparison.png')
@@ -488,7 +505,7 @@ def main():
     return
 
 if __name__ == "__main__":
-    main()
+    main(500)
         
 
 
