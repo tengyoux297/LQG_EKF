@@ -490,6 +490,12 @@ def main(H=1000):
     ax[1].plot(var_list_ekf, label=f'ekf var') 
     ax[2].plot(cost_list_ekf, label=f'ekf cost')
     
+    # lqg_kf = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='kf', lqr_type='orig', goal_state=goal_state)
+    # err_list_kf, var_list_kf, cost_list_kf = lqg_kf.run_sim()
+    # ax[0].plot(err_list_kf, label=f'kf err')
+    # ax[1].plot(var_list_kf, label=f'kf var') 
+    # ax[2].plot(cost_list_kf, label=f'kf cost')
+    
     ax[0].legend()
     ax[0].grid()
     ax[1].legend()
