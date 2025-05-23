@@ -114,6 +114,7 @@ class LQG:
         self.x_goal = goal_state
         self.Q = Q.astype(np.float64)
         self.R = R.astype(np.float64)
+        self.P_lqr = Q.copy()[:self.n, :self.n] # cost-to-go matrix for LQR
         
         # lqe
         self.P_est = np.eye(self.n) * small_value  # estimation error covariance matrix 
@@ -216,6 +217,7 @@ class LQG:
             mu_tilde = self.F.get_mu_tilde() 
             # print(f'A_tilde: {A_tilde.shape}, z_curr: {z_curr.shape}, mu_tilde: {mu_tilde.shape}, w_tilde: {w_tilde.shape}')
             z_next = A_tilde @ z_curr + mu_tilde # shape (n+n^2, 1)
+            
             z_goal = (np.concatenate([goal_state.T, Vec(goal_state @ goal_state.T).T], axis=1)).T # shape (n+n^2, 1)
             dz = z_next - z_goal # shape (n+n^2, 1)
             Q = self.Q # shape (n+n^2, n+n^2)
@@ -266,7 +268,8 @@ class LQG:
     def update_lqr_orig(self, goal_state, ):
         # LQR update only with original state, no augmented state
         # P_lqr = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q[:self.n, :self.n], self.R)  # P is the fixed-point
-        P_lqr = finite_horizon_lqr(self.A, self.B, self.Q[:self.n, :self.n], self.R, N=1, Qf=None)
+        P_lqr = finite_horizon_lqr(self.A, self.B, self.Q[:self.n, :self.n], self.R, N=1, Qf=self.P_lqr)
+        self.P_lqr = P_lqr.copy() # update cost-to-go matrix
         feedback_gain = -np.linalg.pinv(self.R + self.B.T @ P_lqr @ self.B) @ self.B.T @ P_lqr @ self.A
         u_new = feedback_gain @ (goal_state - self.x_hat)  # control input
         self.F.set_u(u_new)
@@ -406,21 +409,21 @@ class LQG:
             var_list.append(var)
             
             # record cost   
-            if self.filter_type == 'qkf':
-                x_goal = self.x_goal
-                z_goal = np.concatenate([x_goal.reshape(-1, 1),Vec(x_goal @ x_goal.T).reshape(-1, 1)], axis=0)
-                z_est = self.Z_est
-                u = self.F.get_u()
-                dz = z_est - z_goal
-                cost = dz.T @ self.Q @ dz + u.T @ self.R @ u
-                cost_list.append(cost.item())
-            else:
-                x_goal = self.x_goal
-                x_est = self.x_hat
-                u = self.F.get_u()
-                dx = x_est - x_goal
-                cost = dx.T @ self.Q[:self.n, :self.n] @ dx + u.T @ self.R @ u
-                cost_list.append(cost.item())
+            # if self.filter_type == 'qkf':
+            #     x_goal = self.x_goal
+            #     z_goal = np.concatenate([x_goal.reshape(-1, 1),Vec(x_goal @ x_goal.T).reshape(-1, 1)], axis=0)
+            #     z_est = self.Z_est
+            #     u = self.F.get_u()
+            #     dz = z_est - z_goal
+            #     cost = dz.T @ self.Q @ dz + u.T @ self.R @ u
+            #     cost_list.append(cost.item())
+            # else:
+            x_goal = self.x_goal
+            x_est = self.x_hat
+            u = self.F.get_u()
+            dx = x_est - x_goal
+            cost = dx.T @ self.Q[:self.n, :self.n] @ dx + u.T @ self.R @ u
+            cost_list.append(cost.item())
             
         cost_to_go_list = []
         for i in range(len(cost_list)):
@@ -472,11 +475,11 @@ def main(H=1000):
     ax[2].set_xlabel('Time step')
     ax[2].set_ylabel('Cost')
 
-    lqg_qkf_orig = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='orig', goal_state=goal_state)
-    err_list_orig, var_list_orig, cost_list_orig = lqg_qkf_orig.run_sim()
-    ax[0].plot(err_list_orig, label=f'orig_lqr err')
-    ax[1].plot(var_list_orig, label=f'orig_lqr var')
-    ax[2].plot(cost_list_orig, label=f'orig_lqr cost')
+    # lqg_qkf_orig = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='orig', goal_state=goal_state)
+    # err_list_orig, var_list_orig, cost_list_orig = lqg_qkf_orig.run_sim()
+    # ax[0].plot(err_list_orig, label=f'orig_lqr err')
+    # ax[1].plot(var_list_orig, label=f'orig_lqr var')
+    # ax[2].plot(cost_list_orig, label=f'orig_lqr cost')
     
     lqg_qkf_aug = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='aug', goal_state=goal_state)
     err_list_aug, var_list_aug, cost_list_aug = lqg_qkf_aug.run_sim()
