@@ -5,7 +5,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import matplotlib.pyplot as plt
 from typing import Literal
 from tqdm import tqdm
+from LQG_QKF.newton.Newton import *
 from stateDynamics import *
+from LQG_QKF.newton.matrix_checker import *
 from scipy.linalg import sqrtm
 import pickle as pkl
 
@@ -15,6 +17,35 @@ def generate_random_symmetric_matrix(size, scale=1.0):
     """"Generate a random symmetric positive definite matrix."""
     A = np.random.randn(size, size)
     return scale * (A.T @ A) + np.eye(size) * 1e-3  # Ensure it's positive definite
+
+def check_eigenvalues(A_tilde, B_tilde):
+    # A_tilde: (20×20), B_tilde: (20×3)
+    eigs = eigvals(A_tilde)
+    unstable = [lam for lam in eigs if abs(lam) >= 1]
+    print('\n')
+    print("All eigenvalues of Ã:\n", np.round(eigs,4))
+    print("Unstable (|λ|≥1):\n", np.round(unstable,4))
+
+    n_aug = A_tilde.shape[0]
+    for lam in unstable:
+        M = np.hstack([lam*np.eye(n_aug) - A_tilde, B_tilde])
+        r = matrix_rank(M)
+        print(f"λ={lam:.4f} → rank([λI-Ã, B̃]) = {r}/{n_aug}")
+    return
+
+def check_stability(A, B, Q, R):
+    # shape
+    # A: (n+n^2, n+n^2), B: (n+n^2, p), Q: (n+n^2, n+n^2), R: (p, p)
+
+    # 2) check structural conditions
+    if not is_pos_def(R):
+        raise ValueError("R is not positive-definite after regularisation.")
+    if not stabilisable(A, B):
+        check_eigenvalues(A, B)
+        raise ValueError("(A,B) not stabilisable.")
+    if not detectable(A, sqrtm(Q)):        # or use C in LQG
+        raise ValueError("(A,Q^{1/2}) not detectable.")
+    return 0
 
 def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
     if Qf is None:
@@ -86,6 +117,43 @@ class LQG:
         
         # lqe
         self.P_est = np.eye(self.n) * small_value  # estimation error covariance matrix 
+    
+    def update_lqr_newton(self, goal_state):
+        z_0 = (np.concatenate([goal_state.T, Vec(goal_state @ goal_state.T).T], axis=1)).T
+        z_1 = self.Z_est
+        z = z_1 - z_0
+        z1 = z[:self.n, :]
+        z2 = z[self.n:, :]
+        A_tilde = self.F.get_A_tilde() # shape (n+n^2, n+n^2)
+        B_tilde = self.F.get_B_tilde() # shape (n+n^2, p)
+        
+        K, P = update_lqr_one_step(A_tilde, B_tilde, self.R, self.Q)
+        self.Pz_est = P # update cost-to-go matrix
+        n = self.n # state size
+        P11 = P[:n,     :n]
+        P12 = P[:n,     n:]
+        P21 = P[n:,     :n]
+        P22 = P[n:,     n:]
+        
+        params = {
+            'z1': z1, # augmented state vector
+            'z2': z2, # augmented state vector
+            'A': self.A, # state transition matrix
+            'B': self.B, # control input matrix
+            'Q': self.Q,  # cost matrix for state
+            'R': self.R,  # cost matrix for control inputs
+            
+            'Pz11': P11, # cost-to-go matrix, element 1
+            'Pz21': P21, # cost-to-go matrix, element 2
+            'Pz12': P12, # cost-to-go matrix, element 3
+            'Pz22': P22, # cost-to-go matrix, element 4
+            'W': self.W,  # covariance matrix for process noise w 
+        }
+        newton = NewtonSolver(self.n, self.p)
+        u_new = newton.newton_method(self.F.get_u(), params, epsilon=1e-6, max_iter=1000, verbose=False, plot=False)
+        self.F.set_u(u_new) # update control input vector
+        return 
+    
     
     # iLQR related
     def get_A_hat(self, x, u):
@@ -207,22 +275,17 @@ class LQG:
         return
         
     def update_lqr(self):
-        if self.lqr_type == 'None':
-            # No LQR update, no control input
-            self.F.set_u(np.ones((self.p, 1)))
-            return 
-        else:
-            goal_state = self.x_goal
-            if self.filter_type == 'ekf' or self.filter_type == 'kf':
+        goal_state = self.x_goal
+        if self.filter_type == 'ekf' or self.filter_type == 'kf':
+            self.update_lqr_orig(goal_state)
+        elif self.filter_type == 'qkf':
+            if self.lqr_type == 'aug':
+                # self.update_lqr_newton(goal_state, infinite_horizon=False)
+                self.update_ilqr(goal_state, alpha=1)
+            elif self.lqr_type == 'orig':
                 self.update_lqr_orig(goal_state)
-            elif self.filter_type == 'qkf':
-                if self.lqr_type == 'aug':
-                    # self.update_lqr_newton(goal_state, infinite_horizon=False)
-                    self.update_ilqr(goal_state, alpha=1)
-                elif self.lqr_type == 'orig':
-                    self.update_lqr_orig(goal_state)
-            else:
-                raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
+        else:
+            raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
         return
         
     
@@ -365,8 +428,8 @@ class LQG:
         for i in range(len(cost_list)):
             cost_to_go = np.sum(cost_list[i:])
             cost_to_go_list.append(cost_to_go)  
+              
         return rmse_list, var_list, cost_to_go_list
-        
             
 
 def one_trial(H=1000, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0, rand_seed=None):
@@ -403,21 +466,15 @@ def one_trial(H=1000, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0, r
     # err_list_kf = lqg_kf_sys.run_sim()
     # plt.plot(err_list_kf, label=f'kf measure error')
     
-    lqe_qkf = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='None', goal_state=goal_state)
-    err_list_qkf, var_list_qkf, _ = lqe_qkf.run_sim()
-    
     lqg_ekf = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='ekf', lqr_type='orig', goal_state=goal_state)
     err_list_ekf, var_list_ekf, cost_list_ekf = lqg_ekf.run_sim()
     
     lqg_qkf_aug = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='aug', goal_state=goal_state)
     err_list_aug, var_list_aug, cost_list_aug = lqg_qkf_aug.run_sim()
     
-    return [err_list_qkf, var_list_qkf], [err_list_ekf, var_list_ekf, cost_list_ekf], [err_list_aug, var_list_aug, cost_list_aug]
+    return [err_list_ekf, var_list_ekf, cost_list_ekf], [err_list_aug, var_list_aug, cost_list_aug]
 
 def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0, rand_seed=None):
-    err_list_qkf_all = []
-    var_list_qkf_all = []
-    
     err_list_ekf_all = []
     var_list_ekf_all = []
     cost_list_ekf_all = []
@@ -429,12 +486,8 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
     for i in tqdm(range(trials)):
         if rand_seed is not None:
             rand_seed = rand_seed + i
-        
-        lqe_qkf_results, ekf_results, qkf_results = one_trial(H=H, noise_scale=noise_scale, m_scale=m_scale, Q_scale=Q_scale, R_scale=R_scale, rand_seed=rand_seed)
-        
-        err_list_qkf_all.append(lqe_qkf_results[0])
-        var_list_qkf_all.append(lqe_qkf_results[1])
-        
+            
+        ekf_results, qkf_results = one_trial(H=H, noise_scale=noise_scale, m_scale=m_scale, Q_scale=Q_scale, R_scale=R_scale, rand_seed=rand_seed)
         err_list_ekf_all.append(ekf_results[0])
         var_list_ekf_all.append(ekf_results[1])
         cost_list_ekf_all.append(ekf_results[2])
@@ -445,27 +498,19 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
     
     
     # average results
-    err_list_qkf_avg = np.mean(np.array(err_list_qkf_all), axis=0)
-    var_list_qkf_avg = np.mean(np.array(var_list_qkf_all), axis=0)
-    
     err_list_ekf_avg = np.mean(np.array(err_list_ekf_all), axis=0)
     var_list_ekf_avg = np.mean(np.array(var_list_ekf_all), axis=0)
     cost_list_ekf_avg = np.mean(np.array(cost_list_ekf_all), axis=0)
-    
     err_list_aug_avg = np.mean(np.array(err_list_aug_all), axis=0)
     var_list_aug_avg = np.mean(np.array(var_list_aug_all), axis=0)
     cost_list_aug_avg = np.mean(np.array(cost_list_aug_all), axis=0)
     
-    
     pkl_dir = 'LQG_QKF/pkl/'
     os.makedirs(pkl_dir, exist_ok=True)
-    with open(pkl_dir + f'lqe_qkf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
-        pkl.dump((np.array(err_list_qkf_all), np.array(var_list_qkf_all)), f)
     with open(pkl_dir + f'ekf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
         pkl.dump((np.array(err_list_ekf_all), np.array(var_list_ekf_all), np.array(cost_list_ekf_all)), f)
     with open(pkl_dir + f'qkf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
         pkl.dump((np.array(err_list_aug_all), np.array(var_list_aug_all), np.array(cost_list_aug_all)), f)
-
     
     if plot:  
         # plot estimation peformance comparison
@@ -530,7 +575,7 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
 
 def nonlinearity_test(H=1000, trials=20):
     m_scales = [0, 1, 1e1, 1e2, 1e3, 1e4]
-    rand_seeds = np.arange(0, len(m_scales),1) * 100
+    rand_seeds = np.arange(0, len(m_scales), 100)
     for i, m_scale in enumerate(m_scales):
         print(f"Testing with m_scale={m_scale}")
         rand_seed = rand_seeds[i]
