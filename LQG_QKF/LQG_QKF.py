@@ -209,7 +209,8 @@ class LQG:
     def update_lqr(self):
         if self.lqr_type == 'None':
             # No LQR update, no control input
-            self.F.set_u(np.ones((self.p, 1)))
+            # self.F.set_u(np.ones((self.p, 1)))
+            self.F.set_u(np.random.randn(self.p, 1))  # small random noise
             return 
         else:
             goal_state = self.x_goal
