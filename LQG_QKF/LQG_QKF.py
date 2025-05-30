@@ -210,7 +210,7 @@ class LQG:
         if self.lqr_type == 'None':
             # No LQR update, no control input
             # self.F.set_u(np.ones((self.p, 1)))
-            self.F.set_u(np.random.randn(self.p, 1))  # small random noise
+            self.F.set_u(np.random.randn(self.p, 0))  # small random noise
             return 
         else:
             goal_state = self.x_goal
@@ -331,8 +331,9 @@ class LQG:
         cost_list = []
         for _ in tqdm(range(1, self.H + 1, 1)):
             self.update_lqe()
-            self.update_lqr()
-            self.forward_state()
+            if self.lqr_type != 'None':
+                self.update_lqr()
+                self.forward_state()
             
             # record error
             estimate_error = np.linalg.norm(self.F.get_x() - self.x_hat).item() 
