@@ -121,13 +121,14 @@ class StateDynamics(object):
     return self.trajectory
   
   def get_w(self):
-    '''
-    process noise w
-    '''
-    omega = np.linalg.cholesky(self.W)
-    noise = omega @ np.random.randn(self.n, 1) # shape (n,1)
-    self.w = noise # store process noise
-    return noise
+      '''
+      process noise w (drawn fresh from W each time)
+      '''
+      omega = np.linalg.cholesky(self.W)
+      rng_noise = np.random.default_rng()  # always fresh, unseeded
+      noise = omega @ rng_noise.standard_normal((self.n, 1))  # shape (n,1)
+      self.w = noise  # store process noise
+      return noise
   
   def forward(self):
     '''
@@ -290,9 +291,12 @@ class sensor(object):
         e = np.zeros((self.m, 1))
         e[i] = 1
         term2 += e @ x.T @ self.M[i] @ x
-    D = np.linalg.cholesky(self.V) 
-    term3 = D @ np.random.randn(self.m, 1)
+
+    D = np.linalg.cholesky(self.V)
+    rng_noise = np.random.default_rng()  # fresh, unseeded generator
+    term3 = D @ rng_noise.standard_normal((self.m, 1))
     return term1 + term2 + term3
+
   
   def measure_pred(self, x_pred):
     '''
@@ -322,5 +326,6 @@ class sensor(object):
     term1 = self.get_measA() # shape (m,1), which is a zero vector
     term2 = self.get_aug_measB() @ z # shape (m,1)
     D = np.linalg.cholesky(self.V) 
-    term3 = D @ np.random.randn(self.m, 1) # shape (m,1)
+    rng_noise = np.random.default_rng()  # fresh, unseeded generator
+    term3 = D @ rng_noise.standard_normal((self.m, 1)) # shape (m,1)
     return term1 + term2 + term3 # shape (m,1)

@@ -429,10 +429,13 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
     cost_list_aug_all = []
     
     for i in tqdm(range(trials)):
-        if rand_seed is not None:
-            rand_seed = rand_seed + i
+        seed_i = rand_seed + i if rand_seed is not None else None
+        lqe_qkf_results, ekf_results, qkf_results = one_trial(
+            H=H, noise_scale=noise_scale, m_scale=m_scale,
+            Q_scale=Q_scale, R_scale=R_scale, rand_seed=seed_i
+    )
         
-        lqe_qkf_results, ekf_results, qkf_results = one_trial(H=H, noise_scale=noise_scale, m_scale=m_scale, Q_scale=Q_scale, R_scale=R_scale, rand_seed=rand_seed)
+        # lqe_qkf_results, ekf_results, qkf_results = one_trial(H=H, noise_scale=noise_scale, m_scale=m_scale, Q_scale=Q_scale, R_scale=R_scale, rand_seed=rand_seed)
         
         err_list_qkf_all.append(lqe_qkf_results[0])
         var_list_qkf_all.append(lqe_qkf_results[1])
@@ -532,10 +535,9 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
 
 def nonlinearity_test(H=1000, trials=20):
     m_scales = [0, 1, 1e1, 1e2, 1e3, 1e4]
-    rand_seeds = np.arange(0, len(m_scales),1) * 100
+    rand_seed = 100  # use the same base for all m_scales
     for i, m_scale in enumerate(m_scales):
         print(f"Testing with m_scale={m_scale}")
-        rand_seed = rand_seeds[i]
         cost_list_ekf_avg, cost_list_aug_avg = test(H=H, trials=trials, plot=False, m_scale=m_scale, rand_seed=rand_seed)
         
     
