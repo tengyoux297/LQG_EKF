@@ -85,17 +85,79 @@ def finite_horizon_lqr(A, B, Q, R, N=100, Qf=None):
         P = Q + A.T @ P @ A - A.T @ P @ B @ np.linalg.pinv(R + B.T @ P @ B) @ B.T @ P @ A
     return P
 
-def update_lqr_one_step(A, B, Q, R):
+def update_lqr_one_step(A, B, Q, R, P):
     # Compute the LQR gain
     K = -np.linalg.pinv(R + B.T @ P @ B) @ B.T @ P @ A
-    P = A.T @ P @ A - A.T @ P @ B @ K + Q + K.T @ R @ K  # update the cost-to-go matrix
+    P_new = A.T @ P @ A - A.T @ P @ B @ K + Q + K.T @ R @ K  # update the cost-to-go matrix
     
-    return K, P
+    return K, P_new
 
 def generate_goal_state(goal_state_E, state_S_size): 
         goal_state_S = np.random.randn(state_S_size, 1)
         goal_state = np.vstack((goal_state_E, goal_state_S))
         return goal_state
+
+def generate_stable_system_parameters(n1, n2, p, m, noise_scale=1e-1, m_scale=1e2):
+    """
+    Generate stable system parameters similar to Julia example.
+    Ensures eigenvalues are within unit circle for stability.
+    """
+    n = n1 + n2
+    
+    # Generate stable state transition matrices
+    A_E = np.random.randn(n1, n1) * 0.1
+    A_S = np.random.randn(n2, n2) * 0.1
+    
+    # Ensure stability by scaling eigenvalues
+    eig_E, _ = np.linalg.eig(A_E)
+    eig_S, _ = np.linalg.eig(A_S)
+    
+    # Scale to ensure eigenvalues are within unit circle
+    max_eig_E = np.max(np.abs(eig_E))
+    max_eig_S = np.max(np.abs(eig_S))
+    
+    if max_eig_E > 0.8:
+        A_E = A_E * 0.8 / max_eig_E
+    if max_eig_S > 0.8:
+        A_S = A_S * 0.8 / max_eig_S
+    
+    B_S = np.random.randn(n2, p) * 0.1
+    
+    # Generate measurement matrices
+    C = np.random.randn(m, n)
+    
+    # Generate quadratic measurement matrices
+    M = []
+    for i in range(m):
+        M_i = generate_random_symmetric_matrix(n, scale=m_scale)
+        M.append(M_i)
+    M = np.array(M)
+    
+    # Generate noise matrices
+    W = generate_random_symmetric_matrix(n, scale=noise_scale)
+    V = generate_random_symmetric_matrix(m, scale=noise_scale)
+    
+    return A_E, A_S, B_S, C, M, W, V
+
+def validate_stable_parameters(A_E, A_S):
+    """
+    Validate that the generated parameters are stable.
+    Returns True if stable, False otherwise.
+    """
+    eig_E, _ = np.linalg.eig(A_E)
+    eig_S, _ = np.linalg.eig(A_S)
+    
+    max_eig_E = np.max(np.abs(eig_E))
+    max_eig_S = np.max(np.abs(eig_S))
+    
+    is_stable = max_eig_E < 1.0 and max_eig_S < 1.0
+    
+    if not is_stable:
+        print(f"Warning: Unstable parameters detected!")
+        print(f"Max eigenvalue A_E: {max_eig_E:.4f}")
+        print(f"Max eigenvalue A_S: {max_eig_S:.4f}")
+    
+    return is_stable
 
 class LQG:
     def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, goal_state, H = 50, 
@@ -153,7 +215,8 @@ class LQG:
             'estimation_error': [],
             'control_effort': [],
             'is_converged': False,
-            'convergence_step': None
+            'convergence_step': None,
+            'convergence_metrics': {}
         } 
     
     # iLQR related
@@ -315,7 +378,7 @@ class LQG:
             term2 = term1 @ q @ e_i.T  # shape (p, p)
             S += term2  # accumulate over p columns
 
-        Z = np.kron(A, B) @ np.kron(x, I_p)  + np.kron(B, A) @ np.kron(x, I_p) # shape (n^2, p)
+        Z = np.kron(A, B) @ np.kron(x, I_p)  + np.kron(B, A) @ np.kron(I_p, x) # shape (n^2, p)
         u_new = -np.linalg.inv(S + 2 * self.R) @ Z.T @ q # shape (p, 1)
         self.F.set_u(u_new)
 
@@ -483,6 +546,7 @@ class LQG:
         if conv_step is not None:
             self.convergence_history['is_converged'] = True
             self.convergence_history['convergence_step'] = conv_step
+            self.convergence_history['convergence_metrics'] = conv_metrics
             return True
             
         return False
@@ -507,6 +571,8 @@ class LQG:
                 var = np.trace(self.Pz_est[:self.n, :self.n])
             elif self.filter_type == 'ekf' or self.filter_type == 'kf':
                 var = np.trace(self.P_est)
+            else:
+                var = 0.0  # Default case
             var_list.append(var)
             
             # record cost   
@@ -548,19 +614,14 @@ def one_trial(H=1000, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0, r
     if rand_seed is not None:
         np.random.seed(rand_seed)
     
-    W = generate_random_symmetric_matrix(n, scale=noise_scale)
-    A_E = np.random.randn(n1, n1) * 1e-1 # state transition matrix for external state
-    A_S = np.random.randn(n2, n2) * 1e-1 # state transition matrix for internal state
-    B_S = np.random.randn(n2, p) * 1e-1 # control input matrix for internal state
+    # Use stable parameter generation
+    A_E, A_S, B_S, C, M, W, V = generate_stable_system_parameters(
+        n1, n2, p, m, noise_scale, m_scale
+    )
     
-    C = np.random.randn(m, n)
-    
-    M = []
-    for i in range(m):
-        M.append(generate_random_symmetric_matrix(n, scale=m_scale))
-    M = np.array(M)
-    
-    V = generate_random_symmetric_matrix(m, scale=noise_scale)
+    # Validate stability
+    if not validate_stable_parameters(A_E, A_S):
+        print("Warning: Generated unstable parameters, but continuing...")
     
     # Q, R must be symmetric positive definite matrices
     Q = generate_random_symmetric_matrix(n+n**2, scale=Q_scale)
@@ -802,8 +863,8 @@ def nonlinearity_test(H=1000, trials=20):
 
 if __name__ == "__main__":
     os.makedirs('LQG_QKF/perf', exist_ok=True)
-    # test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0)
-    nonlinearity_test(H=1000, trials=10)
+    test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0)
+    # nonlinearity_test(H=1000, trials=10)
         
 
 
