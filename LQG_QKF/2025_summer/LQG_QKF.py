@@ -161,7 +161,7 @@ def validate_stable_parameters(A_E, A_S):
 
 class LQG:
     def __init__(self, n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, goal_state, H = 50, 
-                 filter_type: Literal['qkf', 'ekf', 'kf'] = 'qkf',
+                 filter_type: Literal['qkf', 'ekf', 'kf', 'ukf'] = 'qkf',
                  lqr_type: Literal['orig', 'aug_analytic', 'aug_numeric', 'None'] = 'orig'):
         
         self.filter_type = filter_type
@@ -400,7 +400,7 @@ class LQG:
             return 
         else:
             goal_state = self.x_goal
-            if self.filter_type == 'ekf' or self.filter_type == 'kf':
+            if self.filter_type == 'ekf' or self.filter_type == 'kf' or self.filter_type == 'ukf':
                 self.update_lqr_orig(goal_state)
             elif self.filter_type == 'qkf':
                 if self.lqr_type == 'aug_numeric':
@@ -412,7 +412,7 @@ class LQG:
                 elif self.lqr_type == 'orig':
                     self.update_lqr_orig(goal_state)
             else:
-                raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
+                raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', 'kf', or 'ukf'.")
         return
         
     
@@ -497,6 +497,88 @@ class LQG:
         self.P_est = (np.eye(self.n) - kalman_gain @ C) @ p0
         return kalman_gain
     
+    def update_lqe_ukf(self):
+        # UKF parameters
+        alpha = 1e-3
+        beta = 2
+        kappa = 0
+        n = self.x_hat.shape[0]
+        lambda_ = alpha**2 * (n + kappa) - n
+        
+        # Compute sigma points
+        sigma_points = np.zeros((2 * n + 1, n))
+        sigma_points[0] = self.x_hat.flatten()
+        
+        # Cholesky decomposition for numerical stability
+        try:
+            sqrt_P = np.linalg.cholesky((n + lambda_) * self.P_est)
+        except np.linalg.LinAlgError:
+            # If not positive definite, use eigendecomposition
+            eigenvals, eigenvecs = np.linalg.eigh(self.P_est)
+            eigenvals = np.maximum(eigenvals, 1e-8)  # Ensure positive
+            sqrt_P = eigenvecs @ np.diag(np.sqrt(eigenvals))
+            sqrt_P = np.sqrt(n + lambda_) * sqrt_P
+        
+        for i in range(n):
+            sigma_points[i + 1] = self.x_hat.flatten() + sqrt_P[i]
+            sigma_points[n + i + 1] = self.x_hat.flatten() - sqrt_P[i]
+        
+        # Predict sigma points through state dynamics (consistent with EKF)
+        sigma_points_pred = np.zeros_like(sigma_points)
+        for i in range(2 * n + 1):
+            # Use the state dynamics to predict (consistent with EKF approach)
+            x_pred = self.F.A @ sigma_points[i].reshape(-1, 1) + self.F.B @ self.F.u
+            sigma_points_pred[i] = x_pred.flatten()
+        
+        # Compute state mean
+        weights_mean = np.full(2 * n + 1, 1 / (2 * (n + lambda_)))
+        weights_mean[0] = lambda_ / (n + lambda_)
+        x_predicted = np.sum(weights_mean[:, np.newaxis] * sigma_points_pred, axis=0).reshape(-1, 1)
+        
+        # Compute state covariance (consistent with EKF)
+        weights_cov = np.full(2 * n + 1, 1 / (2 * (n + lambda_)))
+        weights_cov[0] = lambda_ / (n + lambda_) + (1 - alpha**2 + beta)
+        sigma_0 = self.F.W.copy()  # Use F.W like EKF
+        for i in range(2 * n + 1):
+            diff = sigma_points_pred[i] - x_predicted.flatten()
+            sigma_0 += weights_cov[i] * np.outer(diff, diff)
+        
+        # Predict measurements using sigma points (consistent with EKF)
+        sigma_points_meas = np.zeros((2 * n + 1, self.sensor.m))
+        for i in range(2 * n + 1):
+            # Use measure_pred for prediction like EKF
+            sigma_points_meas[i] = self.sensor.measure_pred(sigma_points_pred[i].reshape(-1, 1)).flatten()
+        
+        # Predict measurement mean
+        y_predicted = np.sum(weights_mean[:, np.newaxis] * sigma_points_meas, axis=0).reshape(-1, 1)
+        
+        # Predict measurement covariance (consistent with EKF)
+        S = self.sensor.V.copy()  # Use sensor.V like EKF
+        for i in range(2 * n + 1):
+            diff = sigma_points_meas[i] - y_predicted.flatten()
+            S += weights_cov[i] * np.outer(diff, diff)
+        
+        # Cross covariance
+        C_tilde = np.zeros((n, self.sensor.m))
+        for i in range(2 * n + 1):
+            diff_state = sigma_points_pred[i] - x_predicted.flatten()
+            diff_meas = sigma_points_meas[i] - y_predicted.flatten()
+            C_tilde += weights_cov[i] * np.outer(diff_state, diff_meas)
+        
+        # Kalman gain
+        K = C_tilde @ np.linalg.pinv(S)
+        
+        # Measurement residual (consistent with EKF)
+        y = self.sensor.measure(self.F.get_x())
+        delta_y = y - y_predicted
+        
+        # Update the state estimate
+        self.x_hat = x_predicted + K @ delta_y
+        
+        # Update the covariance estimate
+        self.P_est = sigma_0 - K @ S @ K.T
+        return K
+    
     def update_lqe(self):
         if self.filter_type == 'qkf':
             K = self.update_lqe_qkf()
@@ -504,8 +586,10 @@ class LQG:
             K = self.update_lqe_ekf()
         elif self.filter_type == 'kf':
             K = self.update_lqe_kf()
+        elif self.filter_type == 'ukf':
+            K = self.update_lqe_ukf()
         else:
-            raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', or 'kf'.")
+            raise ValueError("Invalid filter type. Choose 'qkf', 'ekf', 'kf', or 'ukf'.")
         t = self.F.t
         # print(f'  t={t:4d}', f'‖K_{self.filter_type}‖₂=', np.linalg.norm(K),) if t % 100 == 0 else None
         return
@@ -569,7 +653,7 @@ class LQG:
             # record variance
             if self.filter_type == 'qkf':
                 var = np.trace(self.Pz_est[:self.n, :self.n])
-            elif self.filter_type == 'ekf' or self.filter_type == 'kf':
+            elif self.filter_type == 'ekf' or self.filter_type == 'kf' or self.filter_type == 'ukf':
                 var = np.trace(self.P_est)
             else:
                 var = 0.0  # Default case
@@ -644,43 +728,99 @@ def one_trial(H=1000, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0, r
     
     lqg_qkf_aug_analytic = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='qkf', lqr_type='aug_analytic', goal_state=goal_state)
     err_list_aug_analytic, var_list_aug_analytic, cost_list_aug_analytic = lqg_qkf_aug_analytic.run_sim()
+    
+    lqg_ukf = LQG(n1, n2, p, W, A_E, A_S, B_S, C, M, V, Q, R, H=H, filter_type='ukf', lqr_type='orig', goal_state=goal_state)
+    err_list_ukf, var_list_ukf, cost_list_ukf = lqg_ukf.run_sim()
 
-    return [err_list_qkf, var_list_qkf], [err_list_ekf, var_list_ekf, cost_list_ekf], [err_list_aug_num, var_list_aug_num, cost_list_aug_num], [err_list_aug_analytic, var_list_aug_analytic, cost_list_aug_analytic]
+    return [err_list_qkf, var_list_qkf], [err_list_ekf, var_list_ekf, cost_list_ekf], [err_list_aug_num, var_list_aug_num, cost_list_aug_num], [err_list_aug_analytic, var_list_aug_analytic, cost_list_aug_analytic], [err_list_ukf, var_list_ukf, cost_list_ukf]
 
 def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0, rand_seed=None):
     
-    err_list_ekf_all = []
-    var_list_ekf_all = []
-    cost_list_ekf_all = []
-
-    err_list_qkf_num_all = []
-    var_list_qkf_num_all = []
-    cost_list_qkf_num_all = []
-
-    err_list_qkf_analytic_all = []
-    var_list_qkf_analytic_all = []
-    cost_list_qkf_analytic_all = []
-
-    for i in tqdm(range(trials)):
-        seed_i = rand_seed + i if rand_seed is not None else None
-        lqe_qkf_results, ekf_results, qkf_num_results, qkf_analytic_results = one_trial(
-            H=H, noise_scale=noise_scale, m_scale=m_scale,
-            Q_scale=Q_scale, R_scale=R_scale, rand_seed=seed_i
-    )
+    # Check if pkl files already exist
+    pkl_dir = 'pkl/'
+    os.makedirs(pkl_dir, exist_ok=True)
+    
+    ekf_file = pkl_dir + f'ekf_results-mscale={int(m_scale)}.pkl'
+    qkf_file = pkl_dir + f'qkf_results-mscale={int(m_scale)}.pkl'
+    qkf_analytic_file = pkl_dir + f'qkf_analytic_results-mscale={int(m_scale)}.pkl'
+    ukf_file = pkl_dir + f'ukf_results-mscale={int(m_scale)}.pkl'
+    
+    # Check if all required files exist
+    if (os.path.exists(ekf_file) and os.path.exists(qkf_file) and 
+        os.path.exists(qkf_analytic_file) and os.path.exists(ukf_file)):
+        print(f"Found existing pkl files for m_scale={int(m_scale)}. Skipping simulation.")
+        print(f"Loading existing results from: {ekf_file}, {qkf_file}, {qkf_analytic_file}, {ukf_file}")
         
-        # lqe_qkf_results, ekf_results, qkf_results = one_trial(H=H, noise_scale=noise_scale, m_scale=m_scale, Q_scale=Q_scale, R_scale=R_scale, rand_seed=rand_seed)
+        # Load existing results
+        with open(ekf_file, 'rb') as f:
+            err_list_ekf_all, var_list_ekf_all, cost_list_ekf_all = pkl.load(f)
+        with open(qkf_file, 'rb') as f:
+            err_list_qkf_num_all, var_list_qkf_num_all, cost_list_qkf_num_all = pkl.load(f)
+        with open(qkf_analytic_file, 'rb') as f:
+            err_list_qkf_analytic_all, var_list_qkf_analytic_all, cost_list_qkf_analytic_all = pkl.load(f)
+        with open(ukf_file, 'rb') as f:
+            err_list_ukf_all, var_list_ukf_all, cost_list_ukf_all = pkl.load(f)
         
-        err_list_ekf_all.append(ekf_results[0])
-        var_list_ekf_all.append(ekf_results[1])
-        cost_list_ekf_all.append(ekf_results[2])
+        # Convert to numpy arrays if they aren't already
+        err_list_ekf_all = np.array(err_list_ekf_all)
+        var_list_ekf_all = np.array(var_list_ekf_all)
+        cost_list_ekf_all = np.array(cost_list_ekf_all)
+        err_list_qkf_num_all = np.array(err_list_qkf_num_all)
+        var_list_qkf_num_all = np.array(var_list_qkf_num_all)
+        cost_list_qkf_num_all = np.array(cost_list_qkf_num_all)
+        err_list_qkf_analytic_all = np.array(err_list_qkf_analytic_all)
+        var_list_qkf_analytic_all = np.array(var_list_qkf_analytic_all)
+        cost_list_qkf_analytic_all = np.array(cost_list_qkf_analytic_all)
+        err_list_ukf_all = np.array(err_list_ukf_all)
+        var_list_ukf_all = np.array(var_list_ukf_all)
+        cost_list_ukf_all = np.array(cost_list_ukf_all)
         
-        err_list_qkf_num_all.append(qkf_num_results[0])
-        var_list_qkf_num_all.append(qkf_num_results[1])
-        cost_list_qkf_num_all.append(qkf_num_results[2])
+        # Skip to averaging and plotting
+        skip_simulation = True
+    else:
+        print(f"Running simulation for m_scale={int(m_scale)}...")
+        skip_simulation = False
+        
+        err_list_ekf_all = []
+        var_list_ekf_all = []
+        cost_list_ekf_all = []
 
-        err_list_qkf_analytic_all.append(qkf_analytic_results[0])
-        var_list_qkf_analytic_all.append(qkf_analytic_results[1])
-        cost_list_qkf_analytic_all.append(qkf_analytic_results[2])
+        err_list_qkf_num_all = []
+        var_list_qkf_num_all = []
+        cost_list_qkf_num_all = []
+
+        err_list_qkf_analytic_all = []
+        var_list_qkf_analytic_all = []
+        cost_list_qkf_analytic_all = []
+
+        err_list_ukf_all = []
+        var_list_ukf_all = []
+        cost_list_ukf_all = []
+
+        for i in tqdm(range(trials)):
+            seed_i = rand_seed + i if rand_seed is not None else None
+            lqe_qkf_results, ekf_results, qkf_num_results, qkf_analytic_results, ukf_results = one_trial(
+                H=H, noise_scale=noise_scale, m_scale=m_scale,
+                Q_scale=Q_scale, R_scale=R_scale, rand_seed=seed_i
+            )
+            
+            # lqe_qkf_results, ekf_results, qkf_results = one_trial(H=H, noise_scale=noise_scale, m_scale=m_scale, Q_scale=Q_scale, R_scale=R_scale, rand_seed=rand_seed)
+            
+            err_list_ekf_all.append(ekf_results[0])
+            var_list_ekf_all.append(ekf_results[1])
+            cost_list_ekf_all.append(ekf_results[2])
+            
+            err_list_qkf_num_all.append(qkf_num_results[0])
+            var_list_qkf_num_all.append(qkf_num_results[1])
+            cost_list_qkf_num_all.append(qkf_num_results[2])
+
+            err_list_qkf_analytic_all.append(qkf_analytic_results[0])
+            var_list_qkf_analytic_all.append(qkf_analytic_results[1])
+            cost_list_qkf_analytic_all.append(qkf_analytic_results[2])
+
+            err_list_ukf_all.append(ukf_results[0])
+            var_list_ukf_all.append(ukf_results[1])
+            cost_list_ukf_all.append(ukf_results[2])
 
 
     # average results
@@ -696,14 +836,22 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
     var_list_qkf_analytic_avg = np.mean(np.array(var_list_qkf_analytic_all), axis=0)
     cost_list_qkf_analytic_avg = np.mean(np.array(cost_list_qkf_analytic_all), axis=0)
 
-    pkl_dir = 'LQG_QKF/pkl/'
-    os.makedirs(pkl_dir, exist_ok=True)
-    with open(pkl_dir + f'ekf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
-        pkl.dump((np.array(err_list_ekf_all), np.array(var_list_ekf_all), np.array(cost_list_ekf_all)), f)
-    with open(pkl_dir + f'qkf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
-        pkl.dump((np.array(err_list_qkf_num_all), np.array(var_list_qkf_num_all), np.array(cost_list_qkf_num_all)), f)
-    with open(pkl_dir + f'qkf_analytic_results-mscale={int(m_scale)}.pkl', 'wb') as f:
-        pkl.dump((np.array(err_list_qkf_analytic_all), np.array(var_list_qkf_analytic_all), np.array(cost_list_qkf_analytic_all)), f)
+    err_list_ukf_avg = np.mean(np.array(err_list_ukf_all), axis=0)
+    var_list_ukf_avg = np.mean(np.array(var_list_ukf_all), axis=0)
+    cost_list_ukf_avg = np.mean(np.array(cost_list_ukf_all), axis=0)
+
+    # Only save pkl files if simulation was actually run
+    if not skip_simulation:
+        pkl_dir = 'pkl/'
+        os.makedirs(pkl_dir, exist_ok=True)
+        with open(pkl_dir + f'ekf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
+            pkl.dump((np.array(err_list_ekf_all), np.array(var_list_ekf_all), np.array(cost_list_ekf_all)), f)
+        with open(pkl_dir + f'qkf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
+            pkl.dump((np.array(err_list_qkf_num_all), np.array(var_list_qkf_num_all), np.array(cost_list_qkf_num_all)), f)
+        with open(pkl_dir + f'qkf_analytic_results-mscale={int(m_scale)}.pkl', 'wb') as f:
+            pkl.dump((np.array(err_list_qkf_analytic_all), np.array(var_list_qkf_analytic_all), np.array(cost_list_qkf_analytic_all)), f)
+        with open(pkl_dir + f'ukf_results-mscale={int(m_scale)}.pkl', 'wb') as f:
+            pkl.dump((np.array(err_list_ukf_all), np.array(var_list_ukf_all), np.array(cost_list_ukf_all)), f)
 
     
     if plot:  
@@ -716,19 +864,19 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
         ax[1].set_xlabel('Time step')   
         ax[1].set_ylabel('Estimate variance')
         
-        ax[0].plot(err_list_ekf_avg, label='EKF error')
-        ax[0].plot(err_list_qkf_num_avg, label='Numeric QKF error')
-        ax[0].plot(err_list_qkf_analytic_avg, label='Analytic QKF error')
-        ax[1].plot(var_list_ekf_avg, label='EKF variance')
-        ax[1].plot(var_list_qkf_num_avg, label='Numeric QKF variance')
-        ax[1].plot(var_list_qkf_analytic_avg, label='Analytic QKF variance')
+        ax[0].plot(err_list_ekf_avg, label='EKF error', color='blue')
+        ax[0].plot(err_list_ukf_avg, label='UKF error', color='green')
+        ax[0].plot(err_list_qkf_num_avg, label='QKF error', color='orange') 
+        ax[1].plot(var_list_ekf_avg, label='EKF variance', color='blue')
+        ax[1].plot(var_list_ukf_avg, label='UKF variance', color='green')
+        ax[1].plot(var_list_qkf_num_avg, label='QKF variance', color='orange')
 
         ax[0].legend()
         ax[1].legend()
         ax[0].grid(True)
         ax[1].grid(True)
         plt.tight_layout()
-        plt.savefig('LQG_QKF/perf/estimation_performance.png')
+        plt.savefig('perf/estimation_performance.png')
         plt.close()
 
         # plot cost performance comparison
@@ -736,26 +884,22 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
         plt.title('Cost performance comparison')
         plt.xlabel('Time step')
         plt.ylabel('Cost')
-        # plt.plot(cost_list_ekf_avg, label='EKF cost')
-        plt.plot(cost_list_qkf_num_avg, label='Numeric QKF cost')
-        plt.plot(cost_list_qkf_analytic_avg, label='Analytic QKF cost')
+        plt.plot(cost_list_ekf_avg, label='LQR+EKF cost', color='blue')
+        plt.plot(cost_list_ukf_avg, label='LQR+UKF cost', color='green')
+        plt.plot(cost_list_qkf_num_avg, label='LQR+QKF cost', color='orange')
         plt.legend()
         plt.grid()
-        plt.savefig('LQG_QKF/perf/cost_performance.png')
+        plt.savefig('perf/cost_performance.png')
         plt.close()
         
         # plot convergence comparison with improved detection
-        plt.figure(figsize=(12, 8))
-        plt.suptitle('Convergence Analysis', fontsize=14)
-        
-        # Subplot 1: Convergence times
-        plt.subplot(2, 2, 1)
-        plt.title('Time to Convergence')
+        fig, axes = plt.subplots(2, 2, figsize=(18, 16))  # Increased figure size
+        fig.suptitle('Convergence Analysis', fontsize=16, y=0.98)  # Moved title up and increased font size
         
         # Use improved convergence detection
         convergence_ekf = []
         convergence_qkf_num = []
-        convergence_qkf_analytic = []
+        convergence_ukf = []
         
         tolerance = np.mean(cost_list_ekf_avg[:100]) * 0.01  # 1% of initial cost as tolerance
         
@@ -763,107 +907,116 @@ def test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.
             # For each trial, detect convergence using the improved method
             conv_ekf, _ = detect_convergence(cost_list_ekf_all[cnt], tolerance=tolerance)
             conv_qkf_num, _ = detect_convergence(cost_list_qkf_num_all[cnt], tolerance=tolerance)
-            conv_qkf_analytic, _ = detect_convergence(cost_list_qkf_analytic_all[cnt], tolerance=tolerance)
+            conv_ukf, _ = detect_convergence(cost_list_ukf_all[cnt], tolerance=tolerance)
             
             convergence_ekf.append(conv_ekf if conv_ekf is not None else H)
             convergence_qkf_num.append(conv_qkf_num if conv_qkf_num is not None else H)
-            convergence_qkf_analytic.append(conv_qkf_analytic if conv_qkf_analytic is not None else H)
+            convergence_ukf.append(conv_ukf if conv_ukf is not None else H)
+        
+        # Subplot 1: Convergence times
+        ax1 = axes[0, 0]
+        ax1.set_title('Time to Convergence', pad=25, fontsize=14)
         
         # Plot convergence times
         trials_range = range(trials)
-        plt.plot(trials_range, convergence_ekf, label='EKF', marker='o', alpha=0.7)
-        plt.plot(trials_range, convergence_qkf_num, label='Numeric QKF', marker='s', alpha=0.7)
-        plt.plot(trials_range, convergence_qkf_analytic, label='Analytic QKF', marker='^', alpha=0.7)
-        plt.xlabel('Trial')
-        plt.ylabel('Convergence Time (steps)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        ax1.plot(trials_range, convergence_ekf, label='LQR+EKF', marker='o', alpha=0.7, color='blue')
+        ax1.plot(trials_range, convergence_ukf, label='LQR+UKF', marker='d', alpha=0.7, color='green')
+        ax1.plot(trials_range, convergence_qkf_num, label='LQR+QKF', marker='s', alpha=0.7, color='orange')
+        ax1.set_xlabel('Trial', fontsize=12)
+        ax1.set_ylabel('Convergence Time (steps)', fontsize=12)
+        ax1.legend(fontsize=10)
+        ax1.grid(True, alpha=0.3)
         
         # Subplot 2: Convergence statistics
-        plt.subplot(2, 2, 2)
-        plt.title('Convergence Statistics')
-        methods = ['EKF', 'Numeric QKF', 'Analytic QKF']
-        avg_conv_times = [np.mean(convergence_ekf), np.mean(convergence_qkf_num), np.mean(convergence_qkf_analytic)]
-        std_conv_times = [np.std(convergence_ekf), np.std(convergence_qkf_num), np.std(convergence_qkf_analytic)]
+        ax2 = axes[0, 1]
+        ax2.set_title('Convergence Statistics', pad=25, fontsize=14)
+        methods = ['LQR+EKF', 'LQR+UKF', 'LQR+QKF']
+        avg_conv_times = [np.mean(convergence_ekf), np.mean(convergence_ukf), np.mean(convergence_qkf_num)]
+        std_conv_times = [np.std(convergence_ekf), np.std(convergence_ukf), np.std(convergence_qkf_num)]
         
-        bars = plt.bar(methods, avg_conv_times, yerr=std_conv_times, capsize=5, alpha=0.7)
-        plt.ylabel('Average Convergence Time')
-        plt.xticks(rotation=45)
-        plt.grid(True, alpha=0.3)
+        bars = ax2.bar(methods, avg_conv_times, yerr=std_conv_times, capsize=5, alpha=0.7)
+        ax2.set_ylabel('Average Convergence Time', fontsize=12)
+        ax2.tick_params(axis='x', rotation=45, labelsize=10)
+        ax2.grid(True, alpha=0.3)
         
-        # Add value labels on bars
+        # Add value labels on bars with better positioning
         for bar, avg_time in zip(bars, avg_conv_times):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + bar.get_height()*0.01, 
-                    f'{avg_time:.0f}', ha='center', va='bottom')
+            ax2.text(bar.get_x() + bar.get_width()/2 + bar.get_width()*0.3, bar.get_height() + max(std_conv_times) * 0.15, 
+                    f'{avg_time:.0f}', ha='center', va='bottom', fontsize=10)
         
         # Subplot 3: Convergence rate (percentage converged vs time)
-        plt.subplot(2, 2, 3)
-        plt.title('Convergence Rate Over Time')
+        ax3 = axes[1, 0]
+        ax3.set_title('Convergence Rate Over Time', pad=25, fontsize=14)
         time_steps = np.arange(0, H, 10)
         
         ekf_conv_rate = []
         qkf_num_conv_rate = []
-        qkf_analytic_conv_rate = []
+        ukf_conv_rate = []
         
         for t in time_steps:
             ekf_conv_rate.append(np.sum(np.array(convergence_ekf) <= t) / trials * 100)
             qkf_num_conv_rate.append(np.sum(np.array(convergence_qkf_num) <= t) / trials * 100)
-            qkf_analytic_conv_rate.append(np.sum(np.array(convergence_qkf_analytic) <= t) / trials * 100)
+            ukf_conv_rate.append(np.sum(np.array(convergence_ukf) <= t) / trials * 100)
         
-        plt.plot(time_steps, ekf_conv_rate, label='EKF', linewidth=2)
-        plt.plot(time_steps, qkf_num_conv_rate, label='Numeric QKF', linewidth=2)
-        plt.plot(time_steps, qkf_analytic_conv_rate, label='Analytic QKF', linewidth=2)
-        plt.xlabel('Time Steps')
-        plt.ylabel('Convergence Rate (%)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        ax3.plot(time_steps, ekf_conv_rate, label='LQR+EKF', linewidth=2, color='blue')
+        ax3.plot(time_steps, ukf_conv_rate, label='LQR+UKF', linewidth=2, color='green')
+        ax3.plot(time_steps, qkf_num_conv_rate, label='LQR+QKF', linewidth=2, color='orange')
+        ax3.set_xlabel('Time Steps', fontsize=12)
+        ax3.set_ylabel('Convergence Rate (%)', fontsize=12)
+        ax3.legend(fontsize=10)
+        ax3.grid(True, alpha=0.3)
         
         # Subplot 4: Final convergence status
-        plt.subplot(2, 2, 4)
-        plt.title('Final Convergence Status')
+        ax4 = axes[1, 1]
+        ax4.set_title('Final Convergence Status', pad=25, fontsize=14)
         conv_counts = [
             np.sum(np.array(convergence_ekf) < H),
+            np.sum(np.array(convergence_ukf) < H),
+            # np.sum(np.array(convergence_qkf_analytic) < H),
             np.sum(np.array(convergence_qkf_num) < H),
-            np.sum(np.array(convergence_qkf_analytic) < H)
         ]
         conv_percentages = [count/trials*100 for count in conv_counts]
         
-        bars = plt.bar(methods, conv_percentages, alpha=0.7, color=['blue', 'orange', 'green'])
-        plt.ylabel('Convergence Rate (%)')
-        plt.xticks(rotation=45)
-        plt.ylim(0, 100)
-        plt.grid(True, alpha=0.3)
+        bars = ax4.bar(methods, conv_percentages, alpha=0.7, color=['blue', 'green', 'orange'])
+        ax4.set_ylabel('Convergence Rate (%)', fontsize=12)
+        ax4.tick_params(axis='x', rotation=45, labelsize=10)
+        ax4.set_ylim(0, 100)
+        ax4.grid(True, alpha=0.3)
         
-        # Add percentage labels
+        # Add percentage labels with better positioning
         for bar, pct in zip(bars, conv_percentages):
-            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
-                    f'{pct:.1f}%', ha='center', va='bottom')
+            ax4.text(bar.get_x() + bar.get_width()/2 + bar.get_width()*0.3, bar.get_height() + 3, 
+                    f'{pct:.1f}%', ha='center', va='bottom', fontsize=10)
         
-        plt.tight_layout()
-        plt.savefig('LQG_QKF/perf/convergence_comparison.png', dpi=300, bbox_inches='tight')
+        # Adjust layout to prevent overlap
+        plt.subplots_adjust(top=0.92, bottom=0.12, left=0.1, right=0.95, hspace=0.35, wspace=0.3)
+        plt.savefig('perf/convergence_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
         
         # Print summary statistics
         print(f"\n=== Convergence Analysis Summary ===")
         print(f"Tolerance used: {tolerance:.2e}")
-        print(f"EKF - Avg convergence time: {np.mean(convergence_ekf):.1f} ± {np.std(convergence_ekf):.1f}")
-        print(f"Numeric QKF - Avg convergence time: {np.mean(convergence_qkf_num):.1f} ± {np.std(convergence_qkf_num):.1f}")
-        print(f"Analytic QKF - Avg convergence time: {np.mean(convergence_qkf_analytic):.1f} ± {np.std(convergence_qkf_analytic):.1f}")
-        print(f"Convergence rates: EKF {conv_percentages[0]:.1f}%, Numeric QKF {conv_percentages[1]:.1f}%, Analytic QKF {conv_percentages[2]:.1f}%")
+        print(f"LQR+EKF - Avg convergence time: {np.mean(convergence_ekf):.1f} ± {np.std(convergence_ekf):.1f}")
+        print(f"LQR+UKF - Avg convergence time: {np.mean(convergence_ukf):.1f} ± {np.std(convergence_ukf):.1f}")
+        print(f"LQR+QKF - Avg convergence time: {np.mean(convergence_qkf_num):.1f} ± {np.std(convergence_qkf_num):.1f}")
+        # print(f"Analytic QKF - Avg convergence time: {np.mean(convergence_qkf_analytic):.1f} ± {np.std(convergence_qkf_analytic):.1f}")
+        print(f"Convergence rates: LQR+EKF {conv_percentages[0]:.1f}%, LQR+UKF {conv_percentages[1]:.1f}%, LQR+QKF {conv_percentages[2]:.1f}%")
 
-    return cost_list_ekf_avg, cost_list_qkf_num_avg, cost_list_qkf_analytic_avg
+    # return cost_list_ekf_avg, cost_list_qkf_num_avg, cost_list_qkf_analytic_avg, cost_list_ukf_avg
+    return cost_list_ekf_avg, cost_list_qkf_num_avg, cost_list_ukf_avg
 
 def nonlinearity_test(H=1000, trials=20):
     m_scales = [0, 1, 1e1, 1e2, 1e3, 1e4]
     rand_seed = 100  # use the same base for all m_scales
     for i, m_scale in enumerate(m_scales):
         print(f"Testing with m_scale={m_scale}")
-        cost_list_ekf_avg, cost_list_qkf_num_avg, cost_list_qkf_analytic_avg = test(H=H, trials=trials, plot=False, m_scale=m_scale, rand_seed=rand_seed)
+        # cost_list_ekf_avg, cost_list_qkf_num_avg, cost_list_qkf_analytic_avg, cost_list_ukf_avg = test(H=H, trials=trials, plot=False, m_scale=m_scale, rand_seed=rand_seed)
+        cost_list_ekf_avg, cost_list_qkf_num_avg, cost_list_ukf_avg = test(H=H, trials=trials, plot=False, m_scale=m_scale, rand_seed=rand_seed)
 
 
 if __name__ == "__main__":
-    os.makedirs('LQG_QKF/perf', exist_ok=True)
-    test(H=1000, trials=20, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0)
+    os.makedirs('perf', exist_ok=True)
+    test(H=1000, trials=100, plot=True, noise_scale=1e-1, m_scale=1e2, Q_scale=1.0, R_scale=1.0)
     # nonlinearity_test(H=1000, trials=10)
         
 
